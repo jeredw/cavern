@@ -2,8 +2,9 @@
         include "vcs.h"
         include "macro.h"
 
-START_X  = 160/2 - 5
-START_Y  = 73
+START_O2 = 30
+START_X  = 29
+START_Y  = 10
 SPRITE_HEIGHT = 10
 DIR_STOP = 0
 DIR_N    = 1
@@ -29,6 +30,10 @@ NBOUND   = 32
 SBOUND   = 128-32
 BUMPTIME = 17
 STEPTIME = 1
+STILL_O2 = 1
+WALK_O2  = 2
+CLIMB_O2 = 4
+O2_RATE  = 10
 
         ; 128 bytes of RAM 
         SEG.U vars
@@ -45,9 +50,11 @@ DIR     ds 1           ; The current motion direction.
 WALKF   ds 1           ; The current walk frame number.
 STEPC   ds 1           ; Counter for advancing frame number.
 CAVE_P  ds 2           ; Pointer to cave row.
-ATWALL  ds 1
-LDIR    ds 1
-        ds 3           ; Spare.
+ATWALL  ds 1           ; Dir of wall collision or 0.
+LDIR    ds 1           ; Last east-west facing dir.
+PFINV   ds 1           ; Playfield color outside visible part.
+FING    ds 1
+        ds 1           ; Spare.
 
         ; Framebuffer: 64 bytes $90 to $CF.
         ; Each slice maps to PF1 or PF2 at one position per scanline.
@@ -60,7 +67,10 @@ FB2     ds FBH
 FB3     ds FBH 
 
         ; Game state: 24 bytes $D0 to $E7.
-        ds 24          ; Spare.
+OXYGEN  ds 1
+OXYCNT  ds 2
+MAX_R   ds 1
+        ds 20          ; Spare.
 
         ; Stack: 24 bytes $E8 to $FF.
         ; The lowest stack bytes are shared for transient storage.
@@ -113,16 +123,24 @@ ChkCave sta WSYNC
 .grav   ldx SPRITE_X
         ldy SPRITE_Y
         jsr GetBit
-        bcs Ground
+        bcs HitGrnd
         inc SPRITE_Y
         lda #1
         sta WALKF
-Ground  
-        lda INTIM
+        sta FING
+        bne Ground
+HitGrnd lda FING
+        beq Ground
+        dec FING
+        sta AUDV1
+        lda #BUMPTIME
+        sta TIM64T
+Ground  lda INTIM
         cmp #BUMPTIME
         bcc IntoVB
 StopSnd lda #0
         sta AUDV1
+        sta AUDV0
 IntoVB  ldx R3
 
         ; Draw 37 total scanlines of vertical blank.
@@ -169,7 +187,7 @@ PrePic  dex            ; 11 +5(n-1)+4
         inx            ; 52 +2
         cpx #16        ; 54 +2
         sta PF1        ; 56 +3
-        beq UnderCave  ; 59 +2
+        beq Status     ; 59 +2
         lda #$80       ; 61 +2
         sta.w R1       ; 63 +4
         lda FB0,x      ; 67 +4
@@ -205,19 +223,51 @@ Picture sta PF1        ; 73 +3 Store PF1 data.
         lda PFCol,y    ; 11 +4
         sta COLUPF     ; 15 +3
         jmp .pf        ; 18 +3
-.bl     lda #CLDARK    ; 12 +2
-        sta.w COLUPF   ; 14 +4
+.bl     lda PFINV      ; 12 +3
+        sta COLUPF     ; 15 +3
         jmp .pf        ; 18 +3
 
-UnderCave
-        ldx #192 - #128
-.fill
-        sta WSYNC
+Status  sta WSYNC
         lda #0
+        sta REFP0
         sta PF1
         sta PF2
+        sta WSYNC
+        ldx #0
+        lda #120
+        jsr XPos
+        sta WSYNC
+.lbl    lda OxyLab,x
+        sta GRP0           ; 11 +3 Store sprite bitmap row.
+        inx
+        sta WSYNC
+        cpx #7
+        bne .lbl
+        ldx #192 - #128 + #8
+        ldy OXYGEN
+        iny
+.fill   dey
+        bmi .nox
+        txa
+        and #3
+        cmp #1
+        bne .mark
+        lda #%01110000
+        .byte $2c
+.mark   lda #%01111100
+        sta GRP0
+        jmp .wait
+.nox    lda #0
+        sta GRP0
+.wait   sta WSYNC
         dex
         bne .fill
+        lda LDIR
+        cmp #DIR_W
+        bne .mirrok
+        lda #%1000     ; Mirror sprite.
+        sta REFP0      ;  
+.mirrok
 
         ; Begin line 1 of overscan.
         sta WSYNC
@@ -228,11 +278,47 @@ UnderCave
 
         ; 30 total lines of overscan.
         ; Take off lines as needed for logic and add below.
-        ldx #27
+        ldx #26
 Overscan
         dex            ; Count line.
         sta WSYNC      ; Start new line.
         bne Overscan
+
+        ; Line 27. Update oxygen supply counters.
+        lda SCROLL_R
+        cmp MAX_R
+        bcc .deco2
+        beq .deco2
+        sta MAX_R
+        inc OXYGEN
+.deco2  lda DIR
+        cmp #DIR_STOP
+        beq .o2nom
+        cmp #DIR_N
+        beq .o2cli
+        lda WALK_O2
+        .byte $2c
+.o2nom  lda STILL_O2
+        .byte $2c
+.o2cli  lda CLIMB_O2
+        clc
+        adc OXYCNT
+        sta OXYCNT
+        txa
+        adc OXYCNT+1
+        sta OXYCNT+1
+        cmp O2_RATE
+        bcc .o2done
+        lda OXYGEN
+.dead   beq .dead
+        dec OXYGEN
+        lda #%0010
+        sta AUDV0
+        lda #BUMPTIME
+        sta TIM64T
+        stx OXYCNT
+        stx OXYCNT+1
+.o2done sta WSYNC
 
         ; Line 28. Check for collisions.
 ChkColl lda CXP0FB
@@ -253,10 +339,6 @@ ChkColl lda CXP0FB
         lda #DIR_STOP
         sta DIR
         sta STEPC
-        lda #%0001
-        sta AUDV1
-        lda #BUMPTIME
-        sta TIM64T
 .cdone  sta CXCLR
         sta WSYNC
         
@@ -337,13 +419,13 @@ Animate cpx #DIR_STOP  ; +2 Moving?
 Init    SUBROUTINE
         sta SWACNT     ; Configure PORT A as input.
 
-        lda #%0010
+        lda #%0100
         sta AUDC0
-        lda #%00111
+        lda #%01111
         sta AUDF0
-        lda #%1111
+        lda #%0111
         sta AUDC1
-        lda #%11111
+        lda #%01111
         sta AUDF1
         lda #<SpriteWalkF1
         sta SPRITE_P
@@ -363,12 +445,10 @@ Init    SUBROUTINE
         ; D4-D5: BALL SIZE 0, 1 clock.
         lda #%00001
         sta CTRLPF
-        lda #CLDARK
-        sta COLUPF
+        lda #START_O2
+        sta OXYGEN
 
-        ldx #0
-        ldy #0
-.testfb:
+.fillfb:
         jsr CopyRow
         jsr StorRow
         tya
@@ -377,7 +457,7 @@ Init    SUBROUTINE
         tay
         inx
         cpx #FBH
-        bne .testfb
+        bne .fillfb
 
         rts
 
@@ -423,20 +503,24 @@ Scroll  SUBROUTINE
         bne .dirs
         lda SPRITE_Y
         cmp #NBOUND
+        ldx #34
         bcs .out
         jsr PanUp
         bcc .out
         lda SPRITE_Y
-        adc #8
+        clc
+        adc #9
         sta SPRITE_Y
         jmp ChkCave
 .dirs   lda SPRITE_Y
         cmp #SBOUND
         bcc .out
+        ldx #34
         jsr PanDown
         bcc .out
         lda SPRITE_Y
-        sbc #8
+        sec
+        sbc #9
         sta SPRITE_Y
 .out    jmp ChkCave
 
@@ -600,7 +684,7 @@ PanDown SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #FBH-1     ; Replace the last FB row.
         jsr StorRow    ; Store the new row into FB.
-        ldx #24
+        ldx #23
         sec            ; Scrolled.
 .out    rts
 
@@ -633,7 +717,7 @@ PanUp   SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #0         ; Replace row 0.
         jsr StorRow    ; Store the new row into FB.
-        ldx #24
+        ldx #23
         sec            ; Scrolled.
 .out    rts
 
@@ -727,6 +811,14 @@ rmask   .byte #%00000001
 lmask   .byte #%10000000, #%01000000, #%00100000, #%00010000
         .byte #%00001000, #%00000100, #%00000010, #%00000001
 
+OxyLab  .byte #%01000000
+        .byte #%10101100
+        .byte #%10100010
+        .byte #%10100100
+        .byte #%01001000
+        .byte #%00001110
+        .byte #%00000000
+
         ;     s  N  E  S  W
 DeltaX  .byte 0, 0, 1, 0, -1
 DeltaY  .byte 0, -1, 0, 1, 0
@@ -787,11 +879,10 @@ SpriteWalkF4
         .byte #%00000000
 
 SpriteColor
-        .byte #$56, #$26, #$25, #$82, #$37
+        .byte #$44, #$26, #$25, #$82, #$37
         .byte #$26, #$25, #$82, #$33, #$56
 
-PFCol
-        .ds 10
+PFCol   EQU . - 10
         .byte $24, $26, $26, $24, $24, $22, $22, $20, $20, $20
 
         ORG $F500
