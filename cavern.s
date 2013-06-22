@@ -14,7 +14,7 @@ SPEED    = 3
 CLDARK   = $00
 LINES    = 192
 CAVEW    = 128
-CAVEH    = 64
+CAVEH    = 48
 FBW      = 32
 FBH      = 16
 ROWH     = LINES / FBH
@@ -25,6 +25,10 @@ PREVROW  = -CAVEW/8
 NEXTROW  = CAVEW/8 
 LBOUND   = 40
 RBOUND   = 120
+NBOUND   = 32
+SBOUND   = 128-32
+BUMPTIME = 17
+STEPTIME = 1
 
         ; 128 bytes of RAM 
         SEG.U vars
@@ -42,7 +46,8 @@ WALKF   ds 1           ; The current walk frame number.
 STEPC   ds 1           ; Counter for advancing frame number.
 CAVE_P  ds 2           ; Pointer to cave row.
 ATWALL  ds 1
-        ds 4           ; Spare.
+LDIR    ds 1
+        ds 3           ; Spare.
 
         ; Framebuffer: 64 bytes $90 to $CF.
         ; Each slice maps to PF1 or PF2 at one position per scanline.
@@ -81,37 +86,9 @@ StartOfFrame
         VERTICAL_SYNC
 
         ; Scroll the screen, consuming some number of scanlines.
-        ldx #35
-        lda DIR
-        cmp #DIR_E
-        bne .dirw
-        lda SPRITE_X
-        cmp #RBOUND
-        bcc .noscrl
-        jsr PanRight
-        bcc .noscrl
-        lda #RBOUND-4
-        sta SPRITE_X
-        jmp .noscrl
-.dirw   cmp #DIR_W
-        bne .noscrl
-        lda SPRITE_X
-        cmp #LBOUND
-        bcs .noscrl
-        jsr PanLeft
-        bcc .noscrl
-        lda #LBOUND+2
-        sta SPRITE_X
-        jmp .noscrl
-;.dirn   cmp #DIR_N
-;        bne .dirs
-;        jsr PanUp
-;        jmp .noscrl
-;.dirs   cmp #DIR_S
-;        bne .dirs
-;        jsr PanDown
-.noscrl
+        jmp Scroll
 
+ChkCave sta WSYNC
         stx R3
         lda ATWALL
         beq .grav
@@ -138,9 +115,15 @@ StartOfFrame
         jsr GetBit
         bcs Ground
         inc SPRITE_Y
-        lda #0
+        lda #1
         sta WALKF
-Ground  ldx R3
+Ground  
+        lda INTIM
+        cmp #BUMPTIME
+        bcc IntoVB
+StopSnd lda #0
+        sta AUDV1
+IntoVB  ldx R3
 
         ; Draw 37 total scanlines of vertical blank.
         ; For the first 35, just blank.
@@ -259,7 +242,7 @@ ChkColl lda CXP0FB
         bne .bump
         inc SPRITE_Y
         jmp .cdone
-.bump   tax 
+.bump   tax
         ldy OppDir,x
         lda DeltaX,y
         clc
@@ -270,6 +253,10 @@ ChkColl lda CXP0FB
         lda #DIR_STOP
         sta DIR
         sta STEPC
+        lda #%0001
+        sta AUDV1
+        lda #BUMPTIME
+        sta TIM64T
 .cdone  sta CXCLR
         sta WSYNC
         
@@ -285,10 +272,12 @@ DecodeDir
 .right  lda #%1000     ; +2 Mirror sprite.
         sta REFP0      ; +3 
         ldx #DIR_W     ; +2 Moving left.
+        stx LDIR
         jmp .stodir
 .left   lda #0         ; +2 Do not mirror sprite.
         sta REFP0      ; +3
         ldx #DIR_E     ; +2 Moving right.
+        stx LDIR
         jmp .stodir
 .up     lda ATWALL
         beq .stodir
@@ -348,8 +337,14 @@ Animate cpx #DIR_STOP  ; +2 Moving?
 Init    SUBROUTINE
         sta SWACNT     ; Configure PORT A as input.
 
-        lda #0
-        sta ATWALL
+        lda #%0010
+        sta AUDC0
+        lda #%00111
+        sta AUDF0
+        lda #%1111
+        sta AUDC1
+        lda #%11111
+        sta AUDF1
         lda #<SpriteWalkF1
         sta SPRITE_P
         lda #>SpriteWalkF1
@@ -368,9 +363,6 @@ Init    SUBROUTINE
         ; D4-D5: BALL SIZE 0, 1 clock.
         lda #%00001
         sta CTRLPF
-        ; PF0 is always blank.
-        lda #0
-        sta PF0
         lda #CLDARK
         sta COLUPF
 
@@ -381,7 +373,7 @@ Init    SUBROUTINE
         jsr StorRow
         tya
         clc
-        adc #16
+        adc #CAVEW/8
         tay
         inx
         cpx #FBH
@@ -405,6 +397,49 @@ Ledge   ldx ATWALL
         sta SPRITE_Y
         jmp Ground
 
+Scroll  SUBROUTINE
+        ldx #35
+        lda DIR
+        cmp #DIR_E
+        bne .dirw
+        lda SPRITE_X
+        cmp #RBOUND
+        bcc .fall
+        jsr PanRight
+        bcc .fall
+        lda #RBOUND-4
+        sta SPRITE_X
+        jmp .fall
+.dirw   cmp #DIR_W
+        bne .fall
+        lda SPRITE_X
+        cmp #LBOUND
+        bcs .fall
+        jsr PanLeft
+        bcc .fall
+        lda #LBOUND+2
+        sta SPRITE_X
+.fall   cmp #DIR_N
+        bne .dirs
+        lda SPRITE_Y
+        cmp #NBOUND
+        bcs .out
+        jsr PanUp
+        bcc .out
+        lda SPRITE_Y
+        adc #8
+        sta SPRITE_Y
+        jmp ChkCave
+.dirs   lda SPRITE_Y
+        cmp #SBOUND
+        bcc .out
+        jsr PanDown
+        bcc .out
+        lda SPRITE_Y
+        sbc #8
+        sta SPRITE_Y
+.out    jmp ChkCave
+
         ; Force the branch and target to be on the same page.
         ALIGN 8
 ; Position object X in column A.
@@ -426,8 +461,13 @@ XPos    SUBROUTINE
 ; Gets the framebuffer bit at screen position X,Y.
 ; Carry is set if bit is set, zero otherwise.
 GetBit  SUBROUTINE
-        txa            ; Get x coordinate in A.
-        sbc #16 - #1   ; Subtract PF0 and offset center of sprite.
+        lda LDIR
+        cmp #DIR_W
+        bne .st
+        inx
+.st     txa            ; Get x coordinate in A.
+        sec
+        sbc #16        ; Subtract PF0 and offset center of sprite.
         sta R2         ; Save in R2.
         lsr            ; Compute (x/32)*16.
         and #$f0       ; 
@@ -534,8 +574,10 @@ AddCave SUBROUTINE
 PanDown SUBROUTINE
         lda SCROLL_R   ; Get screen start row.
         cmp #CAVEH-#FBH ; Compare to max start row.
-        beq .out       ; If equal, do not pan down.
-        inc SCROLL_R   ; Pan down.
+        bne .scrl      ; If equal, do not pan down.
+        clc            ; Did not scroll.
+        rts            ; Return.
+.scrl   inc SCROLL_R   ; Pan down.
         lda <#NEXTROW  ; Offset of next bitmap row.
         ldx >#NEXTROW  ;
         jsr AddCave    ; Add one row.
@@ -559,13 +601,16 @@ PanDown SUBROUTINE
         ldx #FBH-1     ; Replace the last FB row.
         jsr StorRow    ; Store the new row into FB.
         ldx #24
+        sec            ; Scrolled.
 .out    rts
 
 ; Pans the screen up by one row.
 PanUp   SUBROUTINE
         lda SCROLL_R   ; Get start screen row.
-        beq .out       ; If zero, do not pan up.
-        dec SCROLL_R   ; Pan up.
+        bne .scrl      ; If zero, do not pan up.
+        clc            ; Did not scroll.
+        rts            ; Return.
+.scrl   dec SCROLL_R   ; Pan up.
         lda #<PREVROW  ; Offset of previous bitmap row.
         ldx #>PREVROW  ;
         jsr AddCave    ; Subtract one row.
@@ -589,6 +634,7 @@ PanUp   SUBROUTINE
         ldx #0         ; Replace row 0.
         jsr StorRow    ; Store the new row into FB.
         ldx #24
+        sec            ; Scrolled.
 .out    rts
 
 ; Pans the screen left by one column.
@@ -740,7 +786,6 @@ SpriteWalkF4
         .byte #%00000000
         .byte #%00000000
 
-       ORG $F400
 SpriteColor
         .byte #$56, #$26, #$25, #$82, #$37
         .byte #$26, #$25, #$82, #$33, #$56
