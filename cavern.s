@@ -2,8 +2,8 @@
         include "vcs.h"
         include "macro.h"
 
-START_X = 3
-END_X   = 150
+START_X  = 160/2 - 5
+START_Y  = 73
 SPRITE_HEIGHT = 10
 DIR_STOP = 0
 DIR_N    = 1
@@ -11,7 +11,7 @@ DIR_E    = 2
 DIR_S    = 3
 DIR_W    = 4
 SPEED    = 3
-CLDARK   = $44
+CLDARK   = $00
 LINES    = 192
 CAVEW    = 128
 CAVEH    = 64
@@ -23,6 +23,8 @@ PREVCOL  = -1
 NEXTCOL  = 1
 PREVROW  = -CAVEW/8
 NEXTROW  = CAVEW/8 
+LBOUND   = 40
+RBOUND   = 120
 
         ; 128 bytes of RAM 
         SEG.U vars
@@ -39,7 +41,8 @@ DIR     ds 1           ; The current motion direction.
 WALKF   ds 1           ; The current walk frame number.
 STEPC   ds 1           ; Counter for advancing frame number.
 CAVE_P  ds 2           ; Pointer to cave row.
-        ds 5           ; Spare.
+ATWALL  ds 1
+        ds 4           ; Spare.
 
         ; Framebuffer: 64 bytes $90 to $CF.
         ; Each slice maps to PF1 or PF2 at one position per scanline.
@@ -79,27 +82,65 @@ StartOfFrame
 
         ; Scroll the screen, consuming some number of scanlines.
         ldx #35
-        sta WSYNC
-        lda WALKF
-        cmp #3
-        bne .noscrl
         lda DIR
         cmp #DIR_E
         bne .dirw
+        lda SPRITE_X
+        cmp #RBOUND
+        bcc .noscrl
         jsr PanRight
+        bcc .noscrl
+        lda #RBOUND-4
+        sta SPRITE_X
         jmp .noscrl
 .dirw   cmp #DIR_W
-        bne .dirn
+        bne .noscrl
+        lda SPRITE_X
+        cmp #LBOUND
+        bcs .noscrl
         jsr PanLeft
+        bcc .noscrl
+        lda #LBOUND+2
+        sta SPRITE_X
         jmp .noscrl
-.dirn   cmp #DIR_N
-        bne .dirs
-        jsr PanUp
-        jmp .noscrl
-.dirs   cmp #DIR_S
-        bne .dirs
-        jsr PanDown
+;.dirn   cmp #DIR_N
+;        bne .dirs
+;        jsr PanUp
+;        jmp .noscrl
+;.dirs   cmp #DIR_S
+;        bne .dirs
+;        jsr PanDown
 .noscrl
+
+        stx R3
+        lda ATWALL
+        beq .grav
+        lda DIR
+        cmp #DIR_N
+        bne .grav
+        lda SPRITE_Y
+        sec
+        sbc #3
+        tay 
+        ldx ATWALL
+        lda DeltaX,x
+        asl
+        asl
+        clc
+        adc SPRITE_X
+        tax
+        jsr GetBit
+        bcs Ground
+        jmp Ledge
+        ; Get tile beneath current position.
+.grav   ldx SPRITE_X
+        ldy SPRITE_Y
+        jsr GetBit
+        bcs Ground
+        inc SPRITE_Y
+        lda #0
+        sta WALKF
+Ground  ldx R3
 
         ; Draw 37 total scanlines of vertical blank.
         ; For the first 35, just blank.
@@ -153,7 +194,7 @@ PrePic  dex            ; 11 +5(n-1)+4
 Picture sta PF1        ; 73 +3 Store PF1 data.
         bmi .nosp1     ; 0  +2 If y < 0, not in sprite.
         cpy #SPRITE_HEIGHT ; 2  +2 Test y against sprite height.
-        bcs .nosp2         ; 4  +2 If y > H, not in sprite.
+        bcs .nosp2         ; 4  +2 If y >= H, not in sprite.
 .sprite lda (SPRITE_P),y   ; 6  +5 Load sprite bitmap row.
         sta GRP0           ; 11 +3 Store sprite bitmap row.
         lda SpriteColor,y  ; 14 +4 Load sprite row color.
@@ -204,11 +245,33 @@ UnderCave
 
         ; 30 total lines of overscan.
         ; Take off lines as needed for logic and add below.
-        ldx #28
+        ldx #27
 Overscan
         dex            ; Count line.
         sta WSYNC      ; Start new line.
         bne Overscan
+
+        ; Line 28. Check for collisions.
+ChkColl lda CXP0FB
+        bpl .cdone
+        lda DIR
+        cmp #DIR_N
+        bne .bump
+        inc SPRITE_Y
+        jmp .cdone
+.bump   tax 
+        ldy OppDir,x
+        lda DeltaX,y
+        clc
+        adc SPRITE_X
+        sta SPRITE_X
+        lda DIR
+        sta ATWALL
+        lda #DIR_STOP
+        sta DIR
+        sta STEPC
+.cdone  sta CXCLR
+        sta WSYNC
         
         ; Line 29. Decode direction from joystick.
         ; On entry, X is DIR_STOP=0.
@@ -218,34 +281,25 @@ DecodeDir
         bpl .left      ; +2 D7: Left joystick switch closed.
         bvc .right     ; +2 D6: Right joystick switch closed.
         beq .up        ; +2 D4: Upwards joystick switch closed.
-        asl            ; +2 Now check D5.
-        bit SWCHA      ; +3 Test input latch again.
-        bne .stop      ; +2 If D5 not set, stop moving.
-        ldx #DIR_S     ; +2 Moving down.
-        .byte #$2c     ; +3 Skip the next instruction.
-.right  ldx #DIR_W     ; ?2 Moving left.
-        .byte #$2c     ; +3 Skip the next instruction.
-.left   ldx #DIR_E     ; ?2 Moving right.
-        .byte #$2c     ; +3 Skip the next instruction.
-.up     ldx #DIR_N     ; ?2 Moving up.
-.stop   txa            ; +2 Get dir in A.
+        jmp .stodir
+.right  lda #%1000     ; +2 Mirror sprite.
+        sta REFP0      ; +3 
+        ldx #DIR_W     ; +2 Moving left.
+        jmp .stodir
+.left   lda #0         ; +2 Do not mirror sprite.
+        sta REFP0      ; +3
+        ldx #DIR_E     ; +2 Moving right.
+        jmp .stodir
+.up     lda ATWALL
+        beq .stodir
+        ldx #DIR_N     ; ?2 Moving up.
+.stodir txa            ; +2 Get dir in A.
         sta DIR        ; [33] +3 Store dir. [Worst case cycle 33.]
 Step    bne .step      ; +2 If moving, count steps.
         lda #SPEED+1   ; +2 Not moving. Reset step counter.
         sta STEPC      ; +3
 .step   dec STEPC      ; [48] +5 Count step.
-        ; Set sprite direction properly. If facing west, mirror the sprite,
-        ; because the east-west sprite is drawn facing east.
-        lda #0         ; +2
-        sta REFP0      ; +3 Default, do not mirror.
-        lda DIR        ; +3
-        cmp #DIR_W     ; +2 Test if facing west.
-        bne .fdone     ; +2 If not, done with line.
-        lda #%1000     ; +2 Mirror.
-        sta REFP0      ; +3 
-        ; Timing is a little conservative, since worst case above is actually
-        ; south not west.
-.fdone  sta WSYNC      ; [70] +3
+        sta WSYNC      ; [70] +3
 
         ; Line 30. Animate the sprite.
         ; X has the current motion direction.
@@ -262,13 +316,18 @@ Animate cpx #DIR_STOP  ; +2 Moving?
         and #1         ; +2 Move on frame 0 and 2.
         beq .cycle     ; +2
 .move   lda DeltaX,x   ; +4 Get x motion amount for dir.
+        tay
         clc            ; +2
         adc SPRITE_X   ; +3 Add to x coordinate.
-        ;sta SPRITE_X   ; +3
-        lda DeltaY,x   ; +4 Get y motion amount for dir.
+        sta SPRITE_X   ; +3
+        cpy #0
+        beq .movey
+        lda #0
+        sta ATWALL
+.movey  lda DeltaY,x   ; +4 Get y motion amount for dir.
         clc            ; +2
         adc SPRITE_Y   ; +3 Add to y coordinate.
-        ;sta SPRITE_Y   ; +3
+        sta SPRITE_Y   ; +3
         ; Set up next frame of animation.
 .cycle  lda WALKF      ; +2 Get current frame number.
         clc            ; +2
@@ -289,15 +348,15 @@ Animate cpx #DIR_STOP  ; +2 Moving?
 Init    SUBROUTINE
         sta SWACNT     ; Configure PORT A as input.
 
-        lda START_X
-        sta SPRITE_X
+        lda #0
+        sta ATWALL
         lda #<SpriteWalkF1
         sta SPRITE_P
         lda #>SpriteWalkF1
         sta SPRITE_P+1
-        lda #168/2 - #5
+        lda #START_X
         sta SPRITE_X
-        lda #73
+        lda #START_Y
         sta SPRITE_Y
         lda #<CaveData
         sta CAVE_P
@@ -330,22 +389,77 @@ Init    SUBROUTINE
 
         rts
 
+; This chunk of code is here so the picture loop is on one page.
+Ledge   ldx ATWALL
+        stx DIR
+        lda DeltaX,x
+        asl
+        clc
+        adc SPRITE_X
+        sta SPRITE_X
+        lda #0
+        sta ATWALL
+        lda SPRITE_Y
+        sec
+        sbc #3
+        sta SPRITE_Y
+        jmp Ground
+
         ; Force the branch and target to be on the same page.
         ALIGN 8
 ; Position object X in column A.
 XPos    SUBROUTINE
-        sec                 ; 2
-        sta WSYNC           ; 3, line 1
+        sec            ; 2
+        sta WSYNC      ; 3, line 1
 .Divide
-        sbc #15             ; 2
-        bcs .Divide         ; 54 max
-        eor #7              ; 2
-        asl                 ; 2
-        asl                 ; 2
-        asl                 ; 2
-        asl                 ; 2
-        sta HMP0,x          ; 4       68
-        sta RESP0,x         ; 4       72
+        sbc #15        ; 2
+        bcs .Divide    ; 54 max
+        eor #7         ; 2
+        asl            ; 2
+        asl            ; 2
+        asl            ; 2
+        asl            ; 2
+        sta HMP0,x     ; 4       68
+        sta RESP0,x    ; 4       72
+        rts
+
+; Gets the framebuffer bit at screen position X,Y.
+; Carry is set if bit is set, zero otherwise.
+GetBit  SUBROUTINE
+        txa            ; Get x coordinate in A.
+        sbc #16 - #1   ; Subtract PF0 and offset center of sprite.
+        sta R2         ; Save in R2.
+        lsr            ; Compute (x/32)*16.
+        and #$f0       ; 
+        sta R1         ; Save x part of offset in R1.
+        tya            ; Get y coordinate in A.
+        sec            ; Subtract empty space from sprite.
+        sbc #1         ;
+        lsr            ; Compute y/8.
+        lsr            ;
+        lsr            ;
+        ora R1         ; Combine x and y offsets.
+        tax            ; Get FB offset in x.
+        lda FB0,x      ; Read from framebuffer.
+        sta R1         ; Save data in x.
+        lda R2         ; Restore screen x from R2.
+        lsr            ; Compute x/4.
+        lsr            ;
+        and #7         ; Get column bit number.
+        sta R2         ; Save it in R2.
+        txa            ; Get bit number in A.
+        ; 0-15, 16-31, 32-47, 48-63
+        ; norm  mirr   norm   mirr
+        and #$10       ; Is this a mirrored byte?
+        cmp #$10       ; Set carry if so.
+        lda R2         ; Get column number from R2.
+        bcc .nomirr    ; Not mirrored.
+        eor #7         ; Mirror.
+.nomirr tax            ; Get column number in x.
+        lda lmask,x    ; Load column mask.
+        sta R2         ; Store mask.
+        and R1         ; Get bit.
+        cmp R2         ; Set carry if set, else clear it.
         rts
 
 ; Reverse the bits in A (65 cycles).
@@ -444,7 +558,7 @@ PanDown SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #FBH-1     ; Replace the last FB row.
         jsr StorRow    ; Store the new row into FB.
-        ldx #23
+        ldx #24
 .out    rts
 
 ; Pans the screen up by one row.
@@ -474,14 +588,16 @@ PanUp   SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #0         ; Replace row 0.
         jsr StorRow    ; Store the new row into FB.
-        ldx #23
+        ldx #24
 .out    rts
 
 ; Pans the screen left by one column.
 PanLeft SUBROUTINE
         lda SCROLL_C   ; Get screen start column.
-        beq .out       ; If at leftmost pos, don't pan left.
-        dec SCROLL_C   ; Pan left.
+        bne .scrl      ; If not at 0, scroll.
+        clc            ; Clear carry since didn't scroll.
+        rts            ; Return.
+.scrl   dec SCROLL_C   ; Pan left.
         lda SCROLL_C   ; Get new left column.
         and #7         ; Get start pixel of left column.
         sta R1         ; Stash it.
@@ -492,7 +608,7 @@ PanLeft SUBROUTINE
         jsr AddCave    ; Scan left one column.
 .ptrok  lda R1         ; Start column (mod 8).
         tax            ;
-        lda .lmask,x   ; Index mask table.
+        lda lmask,x    ; Index mask table.
         sta R1         ; Store mask for start column.
         ldy #0         ; y indexes left col cave bytes (0, 16, ..., 240).
         ldx -#FBH      ; x+16 indexes framebuffer rows.
@@ -511,17 +627,17 @@ PanLeft SUBROUTINE
         inx            ; Next framebuffer row.
         bne .shift
         ldx #24
-.out    rts
-        ; Bitmasks selecting leftmost pixel in each starting column (mod 8).
-.lmask  .byte #%10000000, #%01000000, #%00100000, #%00010000
-        .byte #%00001000, #%00000100, #%00000010, #%00000001
+        sec
+        rts
 
 ; Pans the screen right by one column.
 PanRight SUBROUTINE
         lda SCROLL_C   ; Get screen start column.
         cmp #CAVEW-#FBW ; Test against rightmost column.
-        beq .out       ; If at rightmost column don't pan right.
-        inc SCROLL_C   ; Else pan right.
+        bne .scrl      ; If at rightmost column don't pan right.
+        clc            ; Flag did not scroll.
+        rts            ; Return.
+.scrl   inc SCROLL_C   ; Else pan right.
         ;0123456701234567012345670123456701234567
         ;       |                              |
         ;aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee
@@ -539,7 +655,7 @@ PanRight SUBROUTINE
         ldy #3         ; In this case, rightmost column is +3 bytes.
 .ptrok  lda R1         ; Start column (mod 8).
         tax            ;
-        lda .rmask,x   ; Index mask table.
+        lda rmask,x    ; Index mask table.
         sta R1         ; Store mask for start column.
         ldx -#FBH      ; x+16 indexes framebuffer rows.
         ; Shift in one new bit on the right of each framebuffer row.
@@ -557,14 +673,18 @@ PanRight SUBROUTINE
         inx            ; Next framebuffer row.
         bne .shift
         ldx #24
-.out    rts
-        ; Bitmasks selecting rightmost pixel based on start column (mod 8).
-.rmask  .byte #%00000001, #%10000000, #%01000000, #%00100000
-        .byte #%00010000, #%00001000, #%00000100, #%00000010
+        sec
+        rts
+
+        ; Bitmasks selecting left/right pixel based on start column (mod 8).
+rmask   .byte #%00000001
+lmask   .byte #%10000000, #%01000000, #%00100000, #%00010000
+        .byte #%00001000, #%00000100, #%00000010, #%00000001
 
         ;     s  N  E  S  W
 DeltaX  .byte 0, 0, 1, 0, -1
 DeltaY  .byte 0, -1, 0, 1, 0
+OppDir  .byte 0, #DIR_S, #DIR_W, #DIR_N, #DIR_E
 
 SpriteData
         .word SpriteWalkF1
@@ -578,11 +698,11 @@ SpriteWalkF1
         .byte #%00010000
         .byte #%00010000
         .byte #%00010000
-        .byte #%00111000
         .byte #%00010000
-        .byte #%00111000
-        .byte #%01111100
-        .byte #%00111000
+        .byte #%00010000
+        .byte #%00010000
+        .byte #%00000000
+        .byte #%00000000
 
 SpriteWalkF2
         .byte #%00000000
@@ -591,35 +711,36 @@ SpriteWalkF2
         .byte #%00010000
         .byte #%00010000
         .byte #%00010000
-        .byte #%00011000
-        .byte #%00111000
-        .byte #%01111100
-        .byte #%00111000
+        .byte #%00010000
+        .byte #%00010000
+        .byte #%00000000
+        .byte #%00000000
 
 SpriteWalkF3
         .byte #%00000000
-        .byte #%00011000
+        .byte #%00001000
         .byte #%00011000
         .byte #%00010000
         .byte #%00010000
         .byte #%00011000
-        .byte #%00110000
-        .byte #%00111000
-        .byte #%01111100
-        .byte #%00111000
+        .byte #%00010000
+        .byte #%00010000
+        .byte #%00000000
+        .byte #%00000000
 
 SpriteWalkF4
         .byte #%00000000
-        .byte #%00011000
+        .byte #%00010000
         .byte #%00011000
         .byte #%00001000
         .byte #%00001000
         .byte #%00001000
-        .byte #%00011000
-        .byte #%00011100
-        .byte #%00111110
-        .byte #%00011100
+        .byte #%00001000
+        .byte #%00001000
+        .byte #%00000000
+        .byte #%00000000
 
+       ORG $F400
 SpriteColor
         .byte #$56, #$26, #$25, #$82, #$37
         .byte #$26, #$25, #$82, #$33, #$56
@@ -628,7 +749,7 @@ PFCol
         .ds 10
         .byte $24, $26, $26, $24, $24, $22, $22, $20, $20, $20
 
-        ORG $F400
+        ORG $F500
 CaveData
         #include "cave.s"
 
