@@ -11,23 +11,60 @@ DIR_E    = 2
 DIR_S    = 3
 DIR_W    = 4
 SPEED    = 3
-CLWALL   = $44
-SCRH     = 192
+CLDARK   = $44
+LINES    = 192
+CAVEW    = 128
+CAVEH    = 64
+FBW      = 32
 FBH      = 16
-ROWH     = SCRH / FBH
+ROWH     = LINES / FBH
+TOS      = $FF
+PREVCOL  = -1
+NEXTCOL  = 1
+PREVROW  = -CAVEW/8
+NEXTROW  = CAVEW/8 
 
+        ; 128 bytes of RAM 
         SEG.U vars
         ORG $80
-SPRITE_X ds 1
-SPRITE_Y ds 1
-SPRITE_P ds 2
-DIR     ds 1
-WALKF   ds 1
-STEPC   ds 1
+
+        ; Drawing state: 16 bytes $80 to $8F.
+SPRITE_X ds 1          ; Screen X position of sprite.
+SPRITE_Y ds 1          ; Screen Y position of sprite.
+SCROLL_R ds 1          ; Top row of cave shown, [0, 47].
+SCROLL_C ds 1          ; Leftmost column of cave shown, [0, 95].
+SCREEN_M ds 1          ; Screen column bit mask.
+SPRITE_P ds 2          ; Pointer to sprite row.
+DIR     ds 1           ; The current motion direction.
+WALKF   ds 1           ; The current walk frame number.
+STEPC   ds 1           ; Counter for advancing frame number.
+CAVE_P  ds 2           ; Pointer to cave row.
+        ds 5           ; Spare.
+
+        ; Framebuffer: 64 bytes $90 to $CF.
+        ; Each slice maps to PF1 or PF2 at one position per scanline.
+        ; xxxx76543210012345677654321001234567xxxx
+        ;     |<---->||<---->||<---->||<---->|
+        ;       FB0     FB1     FB2     FB3
 FB0     ds FBH
 FB1     ds FBH
 FB2     ds FBH
-FB3     ds FBH
+FB3     ds FBH 
+
+        ; Game state: 24 bytes $D0 to $E7.
+        ds 24          ; Spare.
+
+        ; Stack: 24 bytes $E8 to $FF.
+        ; The lowest stack bytes are shared for transient storage.
+R1      ds 1
+R2      ds 1
+R3      ds 1
+R4      ds 1
+R5      ds 1
+R6      ds 1
+R7      ds 1
+R8      ds 1
+        ds 16          ; Stack!
 
         SEG
         ORG $F000
@@ -40,9 +77,32 @@ StartOfFrame
         ; Vertical retrace leaving A=0.
         VERTICAL_SYNC
 
+        ; Scroll the screen, consuming some number of scanlines.
+        ldx #35
+        sta WSYNC
+        lda WALKF
+        cmp #3
+        bne .noscrl
+        lda DIR
+        cmp #DIR_E
+        bne .dirw
+        jsr PanRight
+        jmp .noscrl
+.dirw   cmp #DIR_W
+        bne .dirn
+        jsr PanLeft
+        jmp .noscrl
+.dirn   cmp #DIR_N
+        bne .dirs
+        jsr PanUp
+        jmp .noscrl
+.dirs   cmp #DIR_S
+        bne .dirs
+        jsr PanDown
+.noscrl
+
         ; Draw 37 total scanlines of vertical blank.
         ; For the first 35, just blank.
-        ldx #35
 VBlank  sta WSYNC
         dex
         bne VBlank
@@ -67,25 +127,29 @@ VBlank  sta WSYNC
         ldx #9         ; 9  +2
 PrePic  dex            ; 11 +5(n-1)+4
         bne PrePic     ; 
-        SLEEP 3        ; 55 +3
 
-        ; 191 scanlines.
-        ldx #191 + 1   ; 58 +2
-        lda SPRITE_Y   ; 60 +3
-        tay            ; 63 +2
-        lda.b FB0+#FBH-1 ; 65 +3 Set up initial PF1 data.
+        ldx #0         ; 55 +2
+        ldy SPRITE_Y   ; 57 +3
+        lda #$80       ; 60 +2
+        sta R1         ; 62 +3
+        lda FB0        ; 65 +3 Set up initial PF1 data.
         dey            ; 68 +2
         jmp Picture    ; 70 +3
 
-.newr   sta PF2        ; 45 +3
+; X is the framebuffer row number in 0..15.
+; R1 is a one-hot counter which sets the carry bit every 8 cycles
+; to trigger incrementing the framebuffer row.
+.newr   nop            ; 43 +2
+        sta PF2        ; 45 +3
         lda FB3,x      ; 48 +4
-        SLEEP 4        ; 52 +4
+        inx            ; 52 +2
+        cpx #16        ; 54 +2
         sta PF1        ; 56 +3
-        lda FB0-1,x    ; 59 +4
-        SLEEP 4        ; 63 +4
-        tsx            ; 65 +2
-        dex            ; 67 +2
-        dey            ; 69 +2
+        beq UnderCave  ; 59 +2
+        lda #$80       ; 61 +2
+        sta.w R1       ; 63 +4
+        lda FB0,x      ; 67 +4
+        dey            ; 71 +2
 Picture sta PF1        ; 73 +3 Store PF1 data.
         bmi .nosp1     ; 0  +2 If y < 0, not in sprite.
         cpy #SPRITE_HEIGHT ; 2  +2 Test y against sprite height.
@@ -95,32 +159,42 @@ Picture sta PF1        ; 73 +3 Store PF1 data.
         lda SpriteColor,y  ; 14 +4 Load sprite row color.
         sta COLUP0         ; 18 +3 Store sprite row color.
         ; Render playfield from framebuffer.
-.pf     lda FBRow,x    ; 21 +4 Look up FB row for this line.
-        lsr            ; 25 +2 Set carry if row changes next line.
-        txs            ; 27 +2 Save X. Not using stack, no interrupts.
-        tax            ; 29 +2 Get FB row in X.
-        lda FB1,x      ; 31 +4 Get data for PF2.
-        sta PF2        ; 35 +3 Store PF2 data.
-        lda FB2,x      ; 38 +4 Get data for new PF2.
-        bcs .newr      ; 42 +2 Branch if next line is new row.
-.samer  sta.w PF2      ; 44 +4 Set new PF2 just before it starts.
+.pf     lda R1         ; 21 +3 Get ring counter.
+        lsr            ; 24 +2 Count line, set carry if row changes.
+        sta R1         ; 26 +3 Save ring counter.
+        lda FB1,x      ; 29 +4 Get data for PF2.
+        sta PF2        ; 33 +3 Store PF2 data.
+        lda FB2,x      ; 36 +4 Get data for new PF2.
+        bcs .newr      ; 40 +2 Branch if next line is new row.
+        SLEEP 3        ; 42 +3
+.samer  sta PF2        ; 45 +3 Set new PF2 just before it starts.
         lda FB3,x      ; 48 +4 Get data for PF1.
         SLEEP 3        ; 52 +3
         sta PF1        ; 55 +3 Store PF1 data.
         lda FB0,x      ; 58 +4 Get next line PF1 data.
-        tsx            ; 62 +2 Restore line number.
-        dex            ; 64 +2 Next line.
-        beq StartBlank ; 66 +2
+        SLEEP 6        ; 62 +6
         dey            ; 68 +2 Next sprite line.
         jmp Picture    ; 70 +3
 .nosp1  SLEEP 4        ; 3  +4 Delay to match sprite lines.
-.nosp2  SLEEP 11       ; 7  +11
+.nosp2  cpy #20        ; 7  +2
+        bcs .bl        ; 9  +2
+        lda PFCol,y    ; 11 +4
+        sta COLUPF     ; 15 +3
+        jmp .pf        ; 18 +3
+.bl     lda #CLDARK    ; 12 +2
+        sta.w COLUPF   ; 14 +4
         jmp .pf        ; 18 +3
 
-StartBlank
-        ; Reset stack pointer which was clobbered in the Picture loop.
-        ldx #$ff       ; 69 +2
-        txs            ; 71 +2
+UnderCave
+        ldx #192 - #128
+.fill
+        sta WSYNC
+        lda #0
+        sta PF1
+        sta PF2
+        dex
+        bne .fill
+
         ; Begin line 1 of overscan.
         sta WSYNC
 
@@ -190,11 +264,11 @@ Animate cpx #DIR_STOP  ; +2 Moving?
 .move   lda DeltaX,x   ; +4 Get x motion amount for dir.
         clc            ; +2
         adc SPRITE_X   ; +3 Add to x coordinate.
-        sta SPRITE_X   ; +3
+        ;sta SPRITE_X   ; +3
         lda DeltaY,x   ; +4 Get y motion amount for dir.
         clc            ; +2
         adc SPRITE_Y   ; +3 Add to y coordinate.
-        sta SPRITE_Y   ; +3
+        ;sta SPRITE_Y   ; +3
         ; Set up next frame of animation.
 .cycle  lda WALKF      ; +2 Get current frame number.
         clc            ; +2
@@ -221,8 +295,14 @@ Init    SUBROUTINE
         sta SPRITE_P
         lda #>SpriteWalkF1
         sta SPRITE_P+1
-        lda #150
+        lda #168/2 - #5
+        sta SPRITE_X
+        lda #73
         sta SPRITE_Y
+        lda #<CaveData
+        sta CAVE_P
+        lda #>CaveData
+        sta CAVE_P+1
         ; D0: REF=1, reflect playfield.
         ; D1: SCORE=0, do not color left/right differently.
         ; D2: PFP=0, player is in front of pf.
@@ -232,20 +312,18 @@ Init    SUBROUTINE
         ; PF0 is always blank.
         lda #0
         sta PF0
-        lda #CLWALL
+        lda #CLDARK
         sta COLUPF
 
         ldx #0
-        lda #$ff
+        ldy #0
 .testfb:
-        lda TestPat0,x
-        sta FB0,x
-        lda TestPat1,x
-        sta FB1,x
-        lda TestPat2,x
-        sta FB2,x
-        lda TestPat3,x
-        sta FB3,x
+        jsr CopyRow
+        jsr StorRow
+        tya
+        clc
+        adc #16
+        tay
         inx
         cpx #FBH
         bne .testfb
@@ -269,6 +347,220 @@ XPos    SUBROUTINE
         sta HMP0,x          ; 4       68
         sta RESP0,x         ; 4       72
         rts
+
+; Reverse the bits in A (65 cycles).
+Reverse sta R8         ; +3
+        REPEAT 8       ; +56
+          asl R8       ;   +5 abcdefgh | ????????
+          ror          ;   +2 bcdefgh0 | a???????
+        REPEND
+        rts            ; +6
+
+; Copies 5 bytes from the cave bitmap at CAVE_P+y into R1:R5.
+; 20 bytes.
+CopyRow SUBROUTINE
+        txa
+        pha
+        tya
+        pha
+        ldx #0
+.copy   lda (CAVE_P),y
+        iny
+        sta R1,x
+        inx
+        cpx #5
+        bne .copy
+        pla
+        tay
+        pla
+        tax
+        rts
+
+; Shifts R1:R5 so that bit 7 of R1 in R1:R5 corresponds to SCROLL_C.
+ShftRow SUBROUTINE
+        lda SCROLL_C
+        and #7
+        tax
+.shift  beq .out
+        asl R5
+        rol R4
+        rol R3
+        rol R2
+        rol R1
+        dex
+        jmp .shift
+.out    rts
+
+; Copies row from temporary in R1:R4 to row X of FB0:FB3.
+; Reverses data for FB1 and FB3 for PF2 and PF1-mirrored.
+StorRow SUBROUTINE
+        lda R1
+        sta FB0,x
+        lda R2
+        jsr Reverse
+        sta FB1,x
+        lda R3
+        sta FB2,x
+        lda R4
+        jsr Reverse
+        sta FB3,x
+        rts
+
+; Adds X:A to cave bitmap pointer.
+AddCave SUBROUTINE
+        clc            ;
+        adc CAVE_P     ; LSB of cave row.
+        sta CAVE_P     ; Store LSB.
+        txa            ; Carry into MSB.
+        adc CAVE_P+1   ; MSB of row.
+        sta CAVE_P+1   ; Store MSB.
+        rts
+
+; Pans the screen down by one row.
+PanDown SUBROUTINE
+        lda SCROLL_R   ; Get screen start row.
+        cmp #CAVEH-#FBH ; Compare to max start row.
+        beq .out       ; If equal, do not pan down.
+        inc SCROLL_R   ; Pan down.
+        lda <#NEXTROW  ; Offset of next bitmap row.
+        ldx >#NEXTROW  ;
+        jsr AddCave    ; Add one row.
+        ; Move framebuffer contents up one row.
+        ldx -#FBH+1
+.moveup lda FB0+16,x   ; i.e., from 1, 2, ..., 15
+        sta FB0+15,x   ;         to 0, 1, ..., 14.
+        lda FB1+16,x
+        sta FB1+15,x
+        lda FB2+16,x
+        sta FB2+15,x
+        lda FB3+16,x
+        sta FB3+15,x
+        inx            ; Next row.
+        bne .moveup    ; Keep copying.
+
+        ; Copy new framebuffer row.
+        ldy (#CAVEW/8)*(#FBH-1)  ; Start of the last row.
+        jsr CopyRow    ; Copy new row into temporary storage.
+        jsr ShftRow    ; Shift the row into place.
+        ldx #FBH-1     ; Replace the last FB row.
+        jsr StorRow    ; Store the new row into FB.
+        ldx #23
+.out    rts
+
+; Pans the screen up by one row.
+PanUp   SUBROUTINE
+        lda SCROLL_R   ; Get start screen row.
+        beq .out       ; If zero, do not pan up.
+        dec SCROLL_R   ; Pan up.
+        lda #<PREVROW  ; Offset of previous bitmap row.
+        ldx #>PREVROW  ;
+        jsr AddCave    ; Subtract one row.
+        ; Move framebuffer contents down one row.
+        ldx #FBH-1
+.movedn lda FB0-1,x    ; i.e. from 14, 13, ..., 0
+        sta FB0,x      ;        to 15, 14, ..., 1.
+        lda FB1-1,x
+        sta FB1,x
+        lda FB2-1,x
+        sta FB2,x
+        lda FB3-1,x
+        sta FB3,x
+        dex
+        bne .movedn
+
+        ; Copy new framebuffer row.
+        ldy #0         ; Start of the first row.
+        jsr CopyRow    ; Copy new row into temporary storage.
+        jsr ShftRow    ; Shift the row into place.
+        ldx #0         ; Replace row 0.
+        jsr StorRow    ; Store the new row into FB.
+        ldx #23
+.out    rts
+
+; Pans the screen left by one column.
+PanLeft SUBROUTINE
+        lda SCROLL_C   ; Get screen start column.
+        beq .out       ; If at leftmost pos, don't pan left.
+        dec SCROLL_C   ; Pan left.
+        lda SCROLL_C   ; Get new left column.
+        and #7         ; Get start pixel of left column.
+        sta R1         ; Stash it.
+        cmp #7         ; Pixel 7 implies a new leftmost column byte.
+        bne .ptrok     ; Else current cave ptr is ok.
+        lda <#PREVCOL  ; Offset to previous cave byte.
+        ldx >#PREVCOL  ;
+        jsr AddCave    ; Scan left one column.
+.ptrok  lda R1         ; Start column (mod 8).
+        tax            ;
+        lda .lmask,x   ; Index mask table.
+        sta R1         ; Store mask for start column.
+        ldy #0         ; y indexes left col cave bytes (0, 16, ..., 240).
+        ldx -#FBH      ; x+16 indexes framebuffer rows.
+        ; Shift in one new bit on the left of each framebuffer row.
+.shift  lda (CAVE_P),y ; Load leftmost cave byte.
+        and R1         ; Mask the newly visible bit.
+        cmp R1         ; Set carry if bit is set, else clear.
+        ror FB0+16,x   ; Carry goes into leftmost pixel (bit 7).
+        rol FB1+16,x   ; FB1 is reversed because PF2 is.
+        ror FB2+16,x   ; FB2 is a mirror of PF2, so _not_ reversed.
+        rol FB3+16,x   ; FB3 is a mirrored PF1.
+        tya            ; Next cave row. 
+        clc
+        adc #CAVEW/8   ; Bytes per cave row.
+        tay
+        inx            ; Next framebuffer row.
+        bne .shift
+        ldx #24
+.out    rts
+        ; Bitmasks selecting leftmost pixel in each starting column (mod 8).
+.lmask  .byte #%10000000, #%01000000, #%00100000, #%00010000
+        .byte #%00001000, #%00000100, #%00000010, #%00000001
+
+; Pans the screen right by one column.
+PanRight SUBROUTINE
+        lda SCROLL_C   ; Get screen start column.
+        cmp #CAVEW-#FBW ; Test against rightmost column.
+        beq .out       ; If at rightmost column don't pan right.
+        inc SCROLL_C   ; Else pan right.
+        ;0123456701234567012345670123456701234567
+        ;       |                              |
+        ;aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee
+        ldy #4         ; Rightmost column is usually +4 bytes away.
+        lda SCROLL_C   ; Load scroll start.
+        and #7         ; Get start pixel of left column.
+        sta R1         ; Stash it.
+        bne .ptrok     ; Pixel 0 implies a new leftmost column byte.
+        lda <#NEXTCOL  ; Offset to next cave byte.
+        ldx >#NEXTCOL  ;
+        jsr AddCave    ; Scan right one column.
+        ;0123456701234567012345670123456701234567
+        ;        |                              |
+        ;aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee
+        ldy #3         ; In this case, rightmost column is +3 bytes.
+.ptrok  lda R1         ; Start column (mod 8).
+        tax            ;
+        lda .rmask,x   ; Index mask table.
+        sta R1         ; Store mask for start column.
+        ldx -#FBH      ; x+16 indexes framebuffer rows.
+        ; Shift in one new bit on the right of each framebuffer row.
+.shift  lda (CAVE_P),y ; Load rightmost cave byte.
+        and R1         ; Mask the newly visible bit.
+        cmp R1         ; Set carry if bit is set, else clear.
+        ror FB3+16,x   ; Carry goes into rightmost pixel (bit 7).
+        rol FB2+16,x   ; Leftmost FB3 -> rightmost FB2.
+        ror FB1+16,x   ; Leftmost FB2 -> rightmost FB1.
+        rol FB0+16,x   ; Leftmost FB1 -> rightmost FB0.
+        tya            ; Next cave row. 
+        clc
+        adc #CAVEW/8   ; Bytes per cave row.
+        tay
+        inx            ; Next framebuffer row.
+        bne .shift
+        ldx #24
+.out    rts
+        ; Bitmasks selecting rightmost pixel based on start column (mod 8).
+.rmask  .byte #%00000001, #%10000000, #%01000000, #%00100000
+        .byte #%00010000, #%00001000, #%00000100, #%00000010
 
         ;     s  N  E  S  W
 DeltaX  .byte 0, 0, 1, 0, -1
@@ -332,37 +624,13 @@ SpriteColor
         .byte #$56, #$26, #$25, #$82, #$37
         .byte #$26, #$25, #$82, #$33, #$56
 
-TestPat0
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-TestPat1
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
-        .byte #%01010101, #%10101010, #%01010101, #%10101010 
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
-TestPat2
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-        .byte #%10101010, #%01010101, #%10101010, #%01010101
-TestPat3
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
-        .byte #%01010101, #%10101010, #%01010101, #%10101010 
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
-        .byte #%01010101, #%10101010, #%01010101, #%10101010
+PFCol
+        .ds 10
+        .byte $24, $26, $26, $24, $24, $22, $22, $20, $20, $20
 
-        ORG $F300
-FBRow
-.POS    SET 0
-        REPEAT SCRH
-        ; The low bit says whether the next line will be from the next FB row.
-        ; Setting the bit for line 1 to make Picture loop termination work.
-        .byte ((.POS / ROWH) << 1) + ((.POS % ROWH) == 0)
-.POS    SET .POS + 1
-        REPEND
-        .byte (2 * (#FBH - 1))
+        ORG $F400
+CaveData
+        #include "cave.s"
 
         ORG $FFFA
 
