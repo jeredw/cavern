@@ -2,38 +2,40 @@
         include "vcs.h"
         include "macro.h"
 
-START_O2 = 30
-START_X  = 29
-START_Y  = 10
-SPRITE_HEIGHT = 10
-DIR_STOP = 0
-DIR_N    = 1
-DIR_E    = 2
-DIR_S    = 3
-DIR_W    = 4
-SPEED    = 3
-CLDARK   = $00
-LINES    = 192
-CAVEW    = 128
-CAVEH    = 48
-FBW      = 32
-FBH      = 16
-ROWH     = LINES / FBH
-TOS      = $FF
-PREVCOL  = -1
-NEXTCOL  = 1
-PREVROW  = -CAVEW/8
-NEXTROW  = CAVEW/8 
-LBOUND   = 40
-RBOUND   = 120
-NBOUND   = 32
-SBOUND   = 128-32
-BUMPTIME = 17
-STEPTIME = 1
-STILL_O2 = 1
-WALK_O2  = 2
-CLIMB_O2 = 4
-O2_RATE  = 10
+START_O2 = 30          ; Amount of oxygen at start of game.
+START_X  = 29          ; Starting x coordinate.
+START_Y  = 10          ; Starting y coordinate.
+WIN_Y    = 8           ; Reaching this y coordinate wins.
+SPRITEH  = 10          ; Height of sprite in scanlines.
+DIR_STOP = 0           ; DIR when standing still.
+DIR_U    = 1           ; DIR when climbing.
+DIR_E    = 2           ; DIR when moving right.
+DIR_D    = 3           ; DIR when moving down. TODO: Delete.
+DIR_W    = 4           ; DIR when moving left.
+SPEED    = 3           ; Frames between motion.
+LINES    = 192         ;
+CAVEW    = 128         ; Width of the cave in bits.
+CAVEH    = 48          ; Height of the cave in rows.
+FBW      = 32          ; Width of the framebuffer in bits.
+FBH      = 16          ; Height of the framebuffer in rows.
+ROWH     = LINES / FBH ; Scanlines per row.
+PREVCOL  = -1          ; Offset in bytes to previous cave column.
+NEXTCOL  = 1           ; Offset in bytes to next cave column.
+PREVROW  = -CAVEW/8    ; Offset in bytes to previous cave row.
+NEXTROW  = CAVEW/8     ; Offset in bytes to next cave row.
+
+OXYMX    = 120         ; x coordinate of oxygen meter.
+
+LSEDGE   = 16+31       ; x coordinate of left scroll edge.
+TSEDGE   = 32          ; y coordinate of top scroll edge.
+RSEDGE   = 160-16-32   ; x coordinate of right scroll edge.
+BSEDGE   = 128-32      ; y coordinate of bottom scroll edge.
+
+BUMPTIME = 17          ; How many 64us ticks to play impact sounds for.
+STILL_O2 = 1           ; Oxygen burn rate for standing still.
+WALK_O2  = 2           ; Oxygen burn rate for walking.
+CLIMB_O2 = 4           ; Oxygen burn rate for climbing.
+O2_RATE  = 5           ; MSB of oxygen counter when a bar expires.
 
         ; 128 bytes of RAM 
         SEG.U vars
@@ -50,8 +52,8 @@ DIR     ds 1           ; The current motion direction.
 WALKF   ds 1           ; The current walk frame number.
 STEPC   ds 1           ; Counter for advancing frame number.
 CAVE_P  ds 2           ; Pointer to cave row.
-ATWALL  ds 1           ; Dir of wall collision or 0.
-LDIR    ds 1           ; Last east-west facing dir.
+WALLDIR ds 1           ; Dir of wall collision or 0.
+MREFP0  ds 1           ; Copy of REFP0.
 PFINV   ds 1           ; Playfield color outside visible part.
 FING    ds 1
         ds 1           ; Spare.
@@ -92,56 +94,60 @@ Reset
         jsr Init
 
 StartOfFrame
-        ; Vertical retrace leaving A=0.
-        VERTICAL_SYNC
+        VERTICAL_SYNC  ; Vertical retrace leaving A=0.
 
-        ; Scroll the screen, consuming some number of scanlines.
+        ; Scroll the screen around the cave depending on player position.
+        ; Leaves the number of remaining VBLANK scanlines in X.
         jmp Scroll
 
-ChkCave sta WSYNC
-        stx R3
-        lda ATWALL
-        beq .grav
-        lda DIR
-        cmp #DIR_N
-        bne .grav
-        lda SPRITE_Y
-        sec
-        sbc #3
-        tay 
-        ldx ATWALL
-        lda DeltaX,x
-        asl
-        asl
-        clc
-        adc SPRITE_X
-        tax
-        jsr GetBit
-        bcs Ground
-        jmp Ledge
-        ; Get tile beneath current position.
-.grav   ldx SPRITE_X
-        ldy SPRITE_Y
-        jsr GetBit
-        bcs HitGrnd
-        inc SPRITE_Y
-        lda #1
-        sta WALKF
-        sta FING
+        ; Look at one cave square near the player to see if they should either
+        ; fall or climb over a ledge and stop climbing.
+ChkCave stx R3         ; This many lines of VBLANK remain.
+        lda WALLDIR    ; Direction of most recent wall collision.
+        beq Grav       ; If none, not climbing, so apply gravity.
+        lda DIR        ;
+        cmp #DIR_U     ; Moving up? 
+        bne Grav       ; Not climbing, apply gravity.
+        ; The player is climbing. Check the tile above and to direction
+        ; WALLDIR to see if it is a ledge.
+        lda SPRITE_Y   ; The player wins the game if they climb up
+        cmp #WIN_Y     ; out of the cave, i.e. y is below WIN_Y.
+Win     bcc Win        ; Cheesy win screen.
+        sbc #3         ; Carry is set here.
+        tay            ; Look at y coordinate sprite_y - 3.
+        ldx WALLDIR    ; Get direction to wall being climbed.
+        lda DeltaX,x   ; Load x delta to wall.
+        asl            ; Multiply x delta by 4.
+        asl            ;
+        clc            ; Carry is set for x delta -1.
+        adc SPRITE_X   ; Look at x coordinate sprite_x + 4*dx.
+        tax            ; Put x coordinate in X.
+        jsr GetBit     ; Check if a ledge.
+        bcs Ground     ; If still a wall, keep climbing.
+        jmp Ledge      ; Hop up onto the ledge.
+        ; Get tile below current position.
+Grav    ldx SPRITE_X   ; sprite_x is left of sprite, GetBit adjusts.
+        ldy SPRITE_Y   ; sprite_y is below sprite.
+        jsr GetBit     ; Get tile beneath sprite.
+        bcs HitGrnd    ; If ground, the player hit ground.
+        inc SPRITE_Y   ; Move the player down (gravity).
+        lda #1         ; 
+        sta WALKF      ; 
+        sta FING       ; Flag that the player is falling.
         bne Ground
-HitGrnd lda FING
-        beq Ground
-        dec FING
-        sta AUDV1
-        lda #BUMPTIME
-        sta TIM64T
-Ground  lda INTIM
-        cmp #BUMPTIME
-        bcc IntoVB
-StopSnd lda #0
-        sta AUDV1
-        sta AUDV0
-IntoVB  ldx R3
+HitGrnd lda FING       ; Was the player falling?
+        beq Ground     ; If not falling, 
+        dec FING       ; Mark as not falling.
+        sta AUDV1      ; Play a "thud" sound, since player just landed.
+        lda #BUMPTIME  ; For some duration.
+        sta TIM64T     ;
+Ground  lda INTIM      ; See about turning off sounds.
+        cmp #BUMPTIME  ; Done?
+        bcc IntoVB     ; If not, jump into vblank.
+StopSnd lda #0         ; Turn off sounds.
+        sta AUDV1      ;
+        sta AUDV0      ;
+IntoVB  ldx R3         ; Get number of lines to blank.
 
         ; Draw 37 total scanlines of vertical blank.
         ; For the first 35, just blank.
@@ -152,6 +158,7 @@ VBlank  sta WSYNC
         ; Position sprite 0 (x=0).
         lda SPRITE_X
         jsr XPos       ; Note that x=0 here. Waits.
+        clv
         ; Line 36 of blanking.
         sta WSYNC
         ; Line 37 of blanking.
@@ -176,7 +183,7 @@ PrePic  dex            ; 11 +5(n-1)+4
         sta R1         ; 62 +3
         lda FB0        ; 65 +3 Set up initial PF1 data.
         dey            ; 68 +2
-        jmp Picture    ; 70 +3
+        bne Picture    ; 70 +3
 
 ; X is the framebuffer row number in 0..15.
 ; R1 is a one-hot counter which sets the carry bit every 8 cycles
@@ -194,7 +201,7 @@ PrePic  dex            ; 11 +5(n-1)+4
         dey            ; 71 +2
 Picture sta PF1        ; 73 +3 Store PF1 data.
         bmi .nosp1     ; 0  +2 If y < 0, not in sprite.
-        cpy #SPRITE_HEIGHT ; 2  +2 Test y against sprite height.
+        cpy #SPRITEH   ; 2  +2 Test y against sprite height.
         bcs .nosp2         ; 4  +2 If y >= H, not in sprite.
 .sprite lda (SPRITE_P),y   ; 6  +5 Load sprite bitmap row.
         sta GRP0           ; 11 +3 Store sprite bitmap row.
@@ -216,58 +223,56 @@ Picture sta PF1        ; 73 +3 Store PF1 data.
         lda FB0,x      ; 58 +4 Get next line PF1 data.
         SLEEP 6        ; 62 +6
         dey            ; 68 +2 Next sprite line.
-        jmp Picture    ; 70 +3
+        bvc Picture    ; 70 +3 Always taken.
 .nosp1  SLEEP 4        ; 3  +4 Delay to match sprite lines.
-.nosp2  cpy #20        ; 7  +2
-        bcs .bl        ; 9  +2
-        lda PFCol,y    ; 11 +4
-        sta COLUPF     ; 15 +3
-        jmp .pf        ; 18 +3
-.bl     lda PFINV      ; 12 +3
-        sta COLUPF     ; 15 +3
-        jmp .pf        ; 18 +3
+.nosp2  cpy #20        ; 7  +2 20 pixels above sprite or less?
+        bcs .bl        ; 9  +2 No, black out playfield.
+        lda PFCol,y    ; 11 +4 Get color for this height.
+        sta COLUPF     ; 15 +3 Set playfield color.
+        bvc .pf        ; 18 +3 Always taken.
+.bl     lda PFINV      ; 12 +3 Get invisible playfield color.
+        sta COLUPF     ; 15 +3 Set playfield color.
+        bvc .pf        ; 18 +3 Always taken.
 
-Status  sta WSYNC
-        lda #0
-        sta REFP0
-        sta PF1
-        sta PF2
-        sta WSYNC
-        ldx #0
-        lda #120
-        jsr XPos
-        sta WSYNC
-.lbl    lda OxyLab,x
-        sta GRP0           ; 11 +3 Store sprite bitmap row.
-        inx
-        sta WSYNC
-        cpx #7
-        bne .lbl
-        ldx #192 - #128 + #8
-        ldy OXYGEN
-        iny
-.fill   dey
-        bmi .nox
-        txa
-        and #3
-        cmp #1
-        bne .mark
-        lda #%01110000
-        .byte $2c
-.mark   lda #%01111100
-        sta GRP0
-        jmp .wait
-.nox    lda #0
-        sta GRP0
-.wait   sta WSYNC
-        dex
-        bne .fill
-        lda LDIR
-        cmp #DIR_W
-        bne .mirrok
-        lda #%1000     ; Mirror sprite.
-        sta REFP0      ;  
-.mirrok
+; Draw status display beneath cave showing the amount of oxygen left.
+Status  sta WSYNC      ; Wait for end of last cave line.
+        ldx #0         ;
+        stx REFP0      ; Do not reflect "O2" label.
+        stx PF1        ; Don't show playfield.
+        stx PF2        ;
+        sta WSYNC      ; Boundary beneath cave.
+        lda #OXYMX     ;
+        jsr XPos       ; Position oxygen meter.
+        sta WSYNC      ;
+        ; Draw the label for the oxygen meter.
+.lbl    lda OxyLab,x   ; Get row of "O2" bitmap.
+        sta GRP0       ; Set row as sprite data.
+        inx            ; Next bitmap row.
+        sta WSYNC      ; Wait for end of line.
+        cpx #7         ; Last line?
+        bne .lbl       ; If not, draw another line.
+        ; Draw a vertical oxygen meter then empty lines.
+        ldx #192-#128+#8 ; This many total drawn lines remain.
+        ldy OXYGEN     ; Get oxygen count in Y.
+        iny            ; So dey can set flags.
+.fill   dey            ; Count one more bar displayed.
+        bmi .nox       ; Oxygen meter all drawn.
+        txa            ; 
+        and #3         ; Get line number (mod 4).
+        cmp #1         ; If == 1, draw a tick mark,
+        bne .nomark    ; else no mark.
+        lda #%01110000 ; Bar with black tick mark.
+        .byte $2c      ; Skip next instruction.
+.nomark lda #%01111100 ; Full bar.
+        sta GRP0       ; Set sprite data.
+        bne .wait      ; Done with line.
+.nox    lda #0         ; No sprite data to draw.
+        sta GRP0       ; Set (empty) sprite data.
+.wait   sta WSYNC      ; Wait for next line.
+        dex            ; Count next line.
+        bne .fill      ; If more lines remain, continue.
+        lda MREFP0     ; Restore saved mirror state so
+        sta REFP0      ; player is mirrored if appropriate.
 
         ; Begin line 1 of overscan.
         sta WSYNC
@@ -285,92 +290,89 @@ Overscan
         bne Overscan
 
         ; Line 27. Update oxygen supply counters.
-        lda SCROLL_R
-        cmp MAX_R
-        bcc .deco2
-        beq .deco2
-        sta MAX_R
-        inc OXYGEN
-.deco2  lda DIR
-        cmp #DIR_STOP
-        beq .o2nom
-        cmp #DIR_N
-        beq .o2cli
-        lda WALK_O2
-        .byte $2c
-.o2nom  lda STILL_O2
-        .byte $2c
-.o2cli  lda CLIMB_O2
-        clc
-        adc OXYCNT
-        sta OXYCNT
-        txa
-        adc OXYCNT+1
-        sta OXYCNT+1
-        cmp O2_RATE
-        bcc .o2done
-        lda OXYGEN
-.dead   beq .dead
-        dec OXYGEN
-        lda #%0010
-        sta AUDV0
-        lda #BUMPTIME
-        sta TIM64T
-        stx OXYCNT
-        stx OXYCNT+1
-.o2done sta WSYNC
+        lda SCROLL_R   ; Get current top row of world.
+        cmp MAX_R      ; Compare top row to max top row seen.
+        bcc .deco2     ; If cur top not a new max, skip down.
+        beq .deco2     ;
+        sta MAX_R      ; Set the new maximum top row.
+        inc OXYGEN     ; There is more oxygen deeper in the cave.
+.deco2  lda DIR        ; 
+        cmp #DIR_STOP  ; Is the player moving?
+        beq .o2nom     ; No, consume the normal breathing rate.
+        cmp #DIR_U     ; Is the player climbing?
+        beq .o2cli     ; Climbing, so use a lot of oxygen.
+        lda #WALK_O2   ; Consume walking oxygen.
+        .byte $2c      ; Skip next instruction.
+.o2nom  lda #STILL_O2  ; Consume standing oxygen.
+        .byte $2c      ; Skip next instruction.
+.o2cli  lda #CLIMB_O2  ; Consume climbing oxygen.
+        clc            ; Set by cmp.
+        adc OXYCNT     ; Add consumption to oxygen LSB.
+        sta OXYCNT     ; Store oxygen LSB.
+        txa            ; Carry into MSB (X is zero.)
+        adc OXYCNT+1   ; Add consumption to oxygen MSB.
+        sta OXYCNT+1   ; Store oxygen MSB.
+        cmp #O2_RATE   ; Check MSB against burn counter.
+        bcc .o2done    ; If MSB less than 
+        lda OXYGEN     ; Check oxygen.
+.dead   beq .dead      ; If zero, player is dead.
+        dec OXYGEN     ; Use up one bar of oxygen.
+        lda #%0010     ; Play a blip sound.
+        sta AUDV0      ;
+        lda #BUMPTIME  ;
+        sta TIM64T     ;
+        stx OXYCNT     ; Zero the oxygen counter.
+        stx OXYCNT+1   ;
+.o2done sta WSYNC      ;
 
         ; Line 28. Check for collisions.
-ChkColl lda CXP0FB
-        bpl .cdone
-        lda DIR
-        cmp #DIR_N
-        bne .bump
-        inc SPRITE_Y
-        jmp .cdone
-.bump   tax
-        ldy OppDir,x
-        lda DeltaX,y
-        clc
-        adc SPRITE_X
-        sta SPRITE_X
-        lda DIR
-        sta ATWALL
-        lda #DIR_STOP
-        sta DIR
-        sta STEPC
-.cdone  sta CXCLR
-        sta WSYNC
+ChkColl lda CXP0FB     ; Read collision register.
+        bpl .cdone     ; If player did not collide with PF, ok.
+        lda DIR        ; Get last travel direction.
+        cmp #DIR_U     ; Climbing?
+        bne .bump      ; Bumped against wall.
+        inc SPRITE_Y   ; If climbing, must have hit head.
+        bne .cdone     ;
+.bump   cmp #DIR_W     ; Moving left?
+        bne .bumpw     ; If not, must be right.
+        inc SPRITE_X   ; Bump back to the right.
+        .byte $2c      ; Skip next instruction.
+.bumpw  dec SPRITE_X   ; Bump back to the left.
+        sta WALLDIR     ; Save the collision direction.
+        lda #DIR_STOP  ;
+        sta DIR        ; Stop moving.
+        sta CXCLR      ; Flag collision cleared.
+        beq .rstep     ; Reset step counter.
+.cdone  sta CXCLR      ; Flag collision cleared.
+        sta WSYNC      ; Wait for rest of line.
         
         ; Line 29. Decode direction from joystick.
         ; On entry, X is DIR_STOP=0.
 DecodeDir
-        lda #$10       ; +2 Check bit D4.
-        bit SWCHA      ; +3 Test input latch.
-        bpl .left      ; +2 D7: Left joystick switch closed.
-        bvc .right     ; +2 D6: Right joystick switch closed.
-        beq .up        ; +2 D4: Upwards joystick switch closed.
-        jmp .stodir
-.right  lda #%1000     ; +2 Mirror sprite.
-        sta REFP0      ; +3 
-        ldx #DIR_W     ; +2 Moving left.
-        stx LDIR
-        jmp .stodir
-.left   lda #0         ; +2 Do not mirror sprite.
-        sta REFP0      ; +3
-        ldx #DIR_E     ; +2 Moving right.
-        stx LDIR
-        jmp .stodir
-.up     lda ATWALL
-        beq .stodir
-        ldx #DIR_N     ; ?2 Moving up.
-.stodir txa            ; +2 Get dir in A.
-        sta DIR        ; [33] +3 Store dir. [Worst case cycle 33.]
-Step    bne .step      ; +2 If moving, count steps.
-        lda #SPEED+1   ; +2 Not moving. Reset step counter.
-        sta STEPC      ; +3
-.step   dec STEPC      ; [48] +5 Count step.
-        sta WSYNC      ; [70] +3
+        lda #$10       ; Check bit D4.
+        bit SWCHA      ; Test input latch.
+        bpl .right     ; D7: Right joystick switch closed.
+        bvc .left      ; D6: Left joystick switch closed.
+        bne .stodir    ; If D4 set, not pressing up.
+.up     lda WALLDIR    ; Against a wall?
+        beq .stodir    ; If not, can't climb.
+        ldx #DIR_U     ; Set new dir as up.
+        bne .stodir    ; Always taken.
+.left   lda #%1000     ;
+        sta REFP0      ; Mirror sprite.
+        sta MREFP0     ; Save mirror sprite.
+        ldx #DIR_W     ; Moving left.
+        bne .stodir    ; Always taken.
+.right  stx REFP0      ; Do not mirror sprite.
+        stx MREFP0     ; Save mirror state.
+        ldx #DIR_E     ; Moving right.
+.stodir stx DIR        ; Store dir.
+        cpx #DIR_STOP  ; Moving?
+Step    bne .step      ; If moving, count steps.
+.rstep  lda #SPEED+1   ; Not moving. Reset step counter.
+        sta STEPC      ;
+.step   dec STEPC      ; Count step.
+        sta WSYNC      ;
 
         ; Line 30. Animate the sprite.
         ; X has the current motion direction.
@@ -387,14 +389,14 @@ Animate cpx #DIR_STOP  ; +2 Moving?
         and #1         ; +2 Move on frame 0 and 2.
         beq .cycle     ; +2
 .move   lda DeltaX,x   ; +4 Get x motion amount for dir.
-        tay
+        tay            ;
         clc            ; +2
         adc SPRITE_X   ; +3 Add to x coordinate.
         sta SPRITE_X   ; +3
         cpy #0
         beq .movey
         lda #0
-        sta ATWALL
+        sta WALLDIR
 .movey  lda DeltaY,x   ; +4 Get y motion amount for dir.
         clc            ; +2
         adc SPRITE_Y   ; +3 Add to y coordinate.
@@ -461,78 +463,87 @@ Init    SUBROUTINE
 
         rts
 
+; Lift up onto a ledge and stop climbing.
 ; This chunk of code is here so the picture loop is on one page.
-Ledge   ldx ATWALL
-        stx DIR
-        lda DeltaX,x
-        asl
-        clc
-        adc SPRITE_X
-        sta SPRITE_X
-        lda #0
-        sta ATWALL
-        lda SPRITE_Y
-        sec
-        sbc #3
-        sta SPRITE_Y
+Ledge   ldx WALLDIR    ; Get the direction to the wall.
+        stx DIR        ; Make the player face that way.
+        lda DeltaX,x   ; Get delta to wall.
+        asl            ; dx*2
+        clc            ; Carry was set if -1.
+        adc SPRITE_X   ; Move player to left/right edge of ledge.
+        sta SPRITE_X   ; Update x coord.
+        lda SPRITE_Y   ; Get sprite y (halfway up).
+        sec            ; 
+        sbc #3         ; Move the rest of the way up the wall.
+        sta SPRITE_Y   ;
+        lda #0         ; No longer against a wall.
+        sta WALLDIR    ;
         jmp Ground
 
+; Moves the screen around the cave based on the player's position and motion.
+;
+; The screen scrolls if possible when the player sprite is up against an
+; invisible bounding box about thirty pixels from its edges, leaving the player
+; sprite in the same relative position. So the player can only go outside this
+; box at the extreme edges of the cave.
+;
+; This is located here to keep the Picture loop on one page.
 Scroll  SUBROUTINE
-        ldx #35
-        lda DIR
-        cmp #DIR_E
-        bne .dirw
-        lda SPRITE_X
-        cmp #RBOUND
-        bcc .fall
-        jsr PanRight
-        bcc .fall
-        lda #RBOUND-4
-        sta SPRITE_X
-        jmp .fall
-.dirw   cmp #DIR_W
-        bne .fall
-        lda SPRITE_X
-        cmp #LBOUND
-        bcs .fall
-        jsr PanLeft
-        bcc .fall
-        lda #LBOUND+2
-        sta SPRITE_X
-.fall   cmp #DIR_N
-        bne .dirs
-        lda SPRITE_Y
-        cmp #NBOUND
-        ldx #34
-        bcs .out
-        jsr PanUp
-        bcc .out
-        lda SPRITE_Y
-        clc
-        adc #9
-        sta SPRITE_Y
-        jmp ChkCave
-.dirs   lda SPRITE_Y
-        cmp #SBOUND
-        bcc .out
-        ldx #34
-        jsr PanDown
-        bcc .out
-        lda SPRITE_Y
-        sec
-        sbc #9
-        sta SPRITE_Y
-.out    jmp ChkCave
+        ldx #35        ; 35 scanlines of blanking.
+        lda DIR        ; Get current motion direction.
+        cmp #DIR_E     ; Moving east?
+        bne .checkw    ; No, check west.
+        lda SPRITE_X   ; 
+        cmp #RSEDGE    ; Is sprite X >= the scroll boundary?
+        bcc .checku    ; No, check up.
+        jsr PanRight   ; Scroll right if possible.
+        bcc .checku    ; Could not scroll.
+        lda #RSEDGE-4  ; Move sprite left one tile,
+        sta SPRITE_X   ; to keep it in the same relative spot.
+        bne .checku    ; Always taken.
+.checkw cmp #DIR_W     ; Moving west?
+        bne .checku    ; No, check up.
+        lda SPRITE_X   ; 
+        cmp #LSEDGE    ; Is sprite X < the scroll boundary?
+        bcs .checku    ; No, check up.
+        jsr PanLeft    ; Scroll left if possible.
+        bcc .checku    ; Could not scroll.
+        lda #LSEDGE+3  ; Move the sprite right half a tile.
+        sta SPRITE_X   ; Fall through to up/down scrolling check.
+.checku lda DIR        ; Get motion direction.
+        cmp #DIR_U     ; Moving up?
+        bne .checkd    ; No, check down i.e. falling.
+        lda SPRITE_Y   ;
+        cmp #TSEDGE    ; Is sprite Y < the scroll boundary?
+        ldx #34        ;   (34 lines of blanking remain.)
+        bcs .out       ; No. Also don't scroll down while climbing.
+        jsr PanUp      ; Scroll up.
+        bcc .out       ; Couldn't scroll.
+        lda SPRITE_Y   ; Scrolled up, move sprite down
+        clc            ; to keep it in the same relative position.
+        adc #8         ;
+        sta SPRITE_Y   ; 
+        bne .out       ; Always taken.
+.checkd lda SPRITE_Y   ; 
+        cmp #BSEDGE    ; Is sprite Y >= the scroll boundary?
+        bcc .out       ; No, done.
+        ldx #34        ;   (34 lines of blanking remain.)
+        jsr PanDown    ; Scroll down.
+        bcc .out       ; Couldn't scroll.
+        lda SPRITE_Y   ; Scrolled down, move sprite up
+        sec            ; to keep it in the same relative position.
+        sbc #8         ;
+        sta SPRITE_Y   ;
+.out    jmp ChkCave    ; Next, check nearby cave conditions.
 
-        ; Force the branch and target to be on the same page.
-        ALIGN 8
-; Position object X in column A.
+        
+; Positions object X in column A.
+        ALIGN 8        ; .div15 and branch must be on the same page.
 XPos    SUBROUTINE
         sec            ; 2
         sta WSYNC      ; 3, line 1
-.Divide
-        sbc #15        ; 2
-        bcs .Divide    ; 54 max
+.div15  sbc #15        ; 2
+        bcs .div15     ; 54 max
         eor #7         ; 2
         asl            ; 2
         asl            ; 2
@@ -540,16 +551,15 @@ XPos    SUBROUTINE
         asl            ; 2
         sta HMP0,x     ; 4       68
         sta RESP0,x    ; 4       72
-        rts
+        rts            ; 6
 
 ; Gets the framebuffer bit at screen position X,Y.
 ; Carry is set if bit is set, zero otherwise.
 GetBit  SUBROUTINE
-        lda LDIR
-        cmp #DIR_W
-        bne .st
-        inx
-.st     txa            ; Get x coordinate in A.
+        lda MREFP0     ; Load sprite mirror state.
+        beq .noinc     ; If not mirrored, use given x.
+        inx            ; Else player is actually at x+1.
+.noinc  txa            ; Get x coordinate in A.
         sec
         sbc #16        ; Subtract PF0 and offset center of sprite.
         sta R2         ; Save in R2.
@@ -586,7 +596,7 @@ GetBit  SUBROUTINE
         cmp R2         ; Set carry if set, else clear it.
         rts
 
-; Reverse the bits in A (65 cycles).
+; Reverses the bits in A (65 cycles).
 Reverse sta R8         ; +3
         REPEAT 8       ; +56
           asl R8       ;   +5 abcdefgh | ????????
@@ -684,7 +694,7 @@ PanDown SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #FBH-1     ; Replace the last FB row.
         jsr StorRow    ; Store the new row into FB.
-        ldx #23
+        ldx #22
         sec            ; Scrolled.
 .out    rts
 
@@ -717,7 +727,7 @@ PanUp   SUBROUTINE
         jsr ShftRow    ; Shift the row into place.
         ldx #0         ; Replace row 0.
         jsr StorRow    ; Store the new row into FB.
-        ldx #23
+        ldx #22
         sec            ; Scrolled.
 .out    rts
 
@@ -797,20 +807,21 @@ PanRight SUBROUTINE
         ror FB1+16,x   ; Leftmost FB2 -> rightmost FB1.
         rol FB0+16,x   ; Leftmost FB1 -> rightmost FB0.
         tya            ; Next cave row. 
-        clc
+        clc            ;
         adc #CAVEW/8   ; Bytes per cave row.
-        tay
+        tay            ;
         inx            ; Next framebuffer row.
-        bne .shift
-        ldx #24
-        sec
+        bne .shift     ;
+        ldx #24        ; This many scanlines of VBLANK remain.
+        sec            ; Flag that scrolling happened.
         rts
 
-        ; Bitmasks selecting left/right pixel based on start column (mod 8).
+; Bitmasks selecting left/right pixel based on start column (mod 8).
 rmask   .byte #%00000001
 lmask   .byte #%10000000, #%01000000, #%00100000, #%00010000
         .byte #%00001000, #%00000100, #%00000010, #%00000001
 
+; The label for the oxygen level meter.
 OxyLab  .byte #%01000000
         .byte #%10101100
         .byte #%10100010
@@ -819,11 +830,12 @@ OxyLab  .byte #%01000000
         .byte #%00001110
         .byte #%00000000
 
-        ;     s  N  E  S  W
+; Deltas to move by one step in each direction.
+;             s  U  E  D  W
 DeltaX  .byte 0, 0, 1, 0, -1
 DeltaY  .byte 0, -1, 0, 1, 0
-OppDir  .byte 0, #DIR_S, #DIR_W, #DIR_N, #DIR_E
 
+; Pointers to walk/climb animation frames.
 SpriteData
         .word SpriteWalkF1
         .word SpriteWalkF2
@@ -878,14 +890,18 @@ SpriteWalkF4
         .byte #%00000000
         .byte #%00000000
 
+; One color per scanline of sprite.
+; First color byte is not shown, but is used for oxygen meter.
 SpriteColor
         .byte #$44, #$26, #$25, #$82, #$37
         .byte #$26, #$25, #$82, #$33, #$56
 
+; Playfield colors relative to player sprite position.
 PFCol   EQU . - 10
         .byte $24, $26, $26, $24, $24, $22, $22, $20, $20, $20
 
         ORG $F500
+; The game world map.
 CaveData
         #include "cave.s"
 
