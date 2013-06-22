@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>world map editor</title>
+  <style>
+    canvas {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+      z-index: 0;
+    }
+    #notice {
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: red;
+      font: 13px monospace;
+      z-index: 1;
+    }
+    #download {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+<canvas id=screen width=512 height=256></canvas>
+<div id=notice></div>
+<a id=download href="" download="cave.s">download</a>
+<script>
+  // Cheesily added after I finished to bootstrap localstorage.
+  var cannedMap = '111001111111111111111111111111111111111111111111111111111111111111111111111111111110111111100101111111111111101111011111111111111100001111111111111111101101101000000000100000000000110011101000001000110011100011100101101101111111101000110001110000111111110111000000000000000000000000000000111111100000110010011010011000111000001000000000011000010010010001110000011101010101000100011001100001111111111111111100111111111000000110010010000100000000111111111000010010000000000000100110011000110011010101010001000110111000000000000000000000001111100000111100110010101001111110101100100001111111111000000100001001100010011110010001000100100000101111101111111111111111111111111110000111000110101011011000001011100000000000000011111111011111001000001100110000010001001111001011111001111110001111100111001111111100111100100010000110011110110001111111111110000000000100011010010110001111001100010000000000111000001001000000010000010000110001100111000110101001001111101000111100000000111111111111110010100111111010010001001100100000001110000000000010000000000000000000001101111000001000111011010010101001000001000001100000011000101000010000110100001001011001100011111111111111111111111111111111111001001111111010010000110000001000000110110100001000000010000111000001000110000010110110011100111100100000110011001100110101101011001011010110001111101000011010111111111111110000001100000001110010010000000000101101110000011110000010000000000000000000000000011000000000001010000010001000100000000000000000001111100000100101110100111000011010000100100111101000100111111111111111111111110111111111111110100111000110100010110000011110011101111111111001011101011000100000101000001001111011001000000000000000000011111101000000000000001010000011001000110110111000111100000000000000111111010000111111111010100110111110111011000000000000000000000001010001111011001100100111000111111000101100011011101000100110000000000100011000000000101011101111101111111111111111111111111111010111111110011110001011000110000000000011001000111111111001111111101111010000001000011000111111111000000000000000000000000000000100000000000000000100100110001111111101100011011011001000001111111111111100000111000111000000001111111111111111111111111111111101111111111111111111110010000111100001000100110100000000000000001111111111110001111111111111100001100000000000000000000000000000010000000111011000010000011001110011110100101000000111111100000011001111111110011011111111111110011101111111111100000000001000001101100001100100000000001111000110001111111010010011100000011000000000001101110010000000111111100111010011011000111000011011111110011110000000001000100000011101000000110000100110111100100111110000000001001000000000000011111101100100100100000001111110110000001101111100001011011101000001011000001100110001001100001111111111100000000000000000000000000000011001000000000000000000001001111110001101111111111111111100000101000011010000110010010000011111100000000000000111110000000000001110011111111111111111111100000001100010000011100000000011110001010001100100011000100100000000001110000000000011111110000000000011100000011100000000000000011110010000000000010001011100000111100111010011001100000011000000000000110000000001111111110000000001111111100011111111111110000011110101010001000001010111111000100011110100110010000000111000000100001100000000011111111100000000111110011000000111111110111100011001011110110011110100000011000000111001101100100010011111011011100111110001111111111111000000111111100011111001100110000110001100010111111111101100011100100111001100110011000001111111111111111111111111111111111111111001111111111100000000000000000001001110001101100000000001111100010001100010011000110111011111111111111111111111111111111111111111111111111111111111111111111111000110000011011111111011000000010101100110001110011100011111111111111111111111111111111111111111111111111111100000000000000000011111000001110111011011111111111111000011111111101111010101101111111111111111111111111111111111111111111111111001111111111111100000000111111101010100000000111111111100111101001001110100010001111111111111111111111111111111111111111111111110011100000000001011111111010000010000000000011111110111101110000111000101100000001111111111111101110000000111001111101111111101100011100010001110010011000000111100000000001111111000101010101111110000011100000011111111111111001000110000100000100000000011011000001101101110001100000111111110000000001110110100000010101100011110000111000000111111111111110000010000000000000000000000010111100000011000011110000111111101100001000000000100000000101010010111110001110110001101111111111100001000100101011011001100000101111111111111000000000111111111001000010000000000000000001010001100111111111111110010011111111111000010010101010100101010100001011111111111111111111111011101100010001100010000000010001010100111101011111110000001100111111111110000100011001001101000101000010110001111100000000000000110001000000011001110000000100010101011001000111111000111110011111111111100000100000000000000000000000001110010110000000000000000100000000000110011111000001000100010111010001110100010000000001111111111000000111111111111111111110000011111100000110000000000000000000000001110010111011010011110100010100010100000110000001110111111110000000000000000000000000000000011100000001110000000000000000000000010100100111110100000100100101000001010001100000010001111111100000000000000000100010001000000101100001111100000000000000000000000001001001010001001000000100010000010100011000000011111111111000000001000000101000101010000001001001111111000000000000000000000000010010000000100111100001100100000101101011000000001111111110000000011011001110100101001000010010011001110001100000000000011000000100101111111111111000011101000000011011001100000011111111100000010000010000000000000000000111101111011110111001000100000111000000001001001000110101000100110000011111111011001111111111111011000111000000111010001101101101111001111111101110110011101011110000000111000000000000000011111110000000000000110011111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111';
+
+  function matEqual(a, b) {
+    if (a.length != b.length)
+      return false;
+    if (a.length && a[0].length != b[0].length)
+      return false;
+    for (var j = 0; j < a.length; j++) {
+      if (a[j].length != b[j].length)
+        return false;
+      for (var i = 0; i < a[j].length; i++) {
+        if (a[j][i] != b[j][i])
+          return false;
+      }
+    }
+    return true;
+  }
+
+  var world = (function() {
+    var MAX_WIDTH = 128;
+    var MAX_HEIGHT = 48;
+    var bitmap = [];
+    return {
+      init: function() {
+        if (!this.restore())
+          this.clearRect([0, 0, MAX_WIDTH - 1, MAX_HEIGHT - 1]);
+      },
+      restore: function() {
+        var savedBitmap = localStorage.getItem('bitmap') || cannedMap;
+        if (!savedBitmap)// || savedBitmap.length != MAX_HEIGHT * MAX_WIDTH)
+          return false;
+        var bits = savedBitmap.split('');
+        for (var j = 0, s = 0; j < MAX_HEIGHT; j++, s += MAX_WIDTH) {
+          bitmap[j] = bits.slice(s, s + MAX_WIDTH).map(function(elem) {
+            return parseInt(elem, 10);
+          });
+        }
+        return true;
+      },
+      save: function() {
+        localStorage.setItem('bitmap', bitmap.map(function(row) {
+          return row.join('')
+        }).join(''));
+      },
+      check: function(testBitmap) {
+        return matEqual(bitmap, testBitmap);
+      },
+      compress: function() {
+        var data = [];
+        var emit = function(value, count) {
+          data.push(((value & 15) << 4) | (count - 1));
+          rowSize++;
+        };
+        for (var j = 0; j < MAX_HEIGHT; j++) {
+          var v = 0;
+          var lastV = null;
+          var count = 1;
+          for (var i = 0; i < MAX_WIDTH; i += 4) {
+            v = 0;
+            for (var b = 0; b < 4; b++)
+              v = (v << 1) | (this.at(i + b, j));
+            if (v == lastV && count < 16) {
+              count++;
+            } else if (i != 0) {
+              emit(lastV, count);
+              count = 1;
+            }
+            lastV = v;
+          }
+          emit(v, count);
+        }
+        return data;
+      },
+      uncompress: function(data) {
+        var rows = [];
+        var i = 0;
+        var j = 0;
+        var expand = function(value, count) {
+          for (var k = 0; k < count; k++) {
+            var tmp = value;
+            for (var b = 0; b < 4; b++) {
+              rows[j][i++] = (tmp & 128) ? 1 : 0; 
+              tmp = tmp << 1;
+            }
+          }
+        };
+        for (var offs = 0; offs < data.length; offs++) {
+          if (i == 0)
+            rows[j] = [];
+          var count = 1 + (data[offs] & 15);
+          expand(data[offs], count);
+          if (i == MAX_WIDTH) {
+            i = 0;
+            j++;
+          }
+        }
+        return rows;
+      },
+      compress2: function() {
+        var data = [];
+        var emit = function(value, count) {
+          if (count > 1) {
+            data.push(128 | (count - 1));
+            data.push(value);
+          } else if (count == 1) {
+            data.push(value);
+          }
+        };
+        for (var j = 0; j < MAX_HEIGHT; j++) {
+          var v = 0;
+          var lastV = 0;
+          var count = 1;
+          for (var i = 0; i < MAX_WIDTH; i += 7) {
+            v = 0;
+            for (var b = 0; b < 7; b++)
+              v = (v << 1) | (this.at(i + b, j));
+            if (v == lastV) {
+              count++;
+            } else if (i != 0) {
+              emit(lastV, count);
+              count = 1;
+            }
+            lastV = v;
+          }
+          emit(v, count);
+        }
+        return data;
+      },
+      uncompress2: function(data) {
+        var rows = [];
+        var i = 0;
+        var j = 0;
+        var expand = function(value, count) {
+          for (var k = 0; k < count; k++) {
+            var tmp = value;
+            for (var b = 0; b < 7; b++) {
+              if (i < MAX_WIDTH)
+                rows[j][i++] = (tmp & 64) ? 1 : 0;
+              tmp = tmp << 1;
+            }
+          }
+        };
+        for (var offs = 0; offs < data.length; offs++) {
+          if (i == 0)
+            rows[j] = [];
+          var count = 1;
+          if (data[offs] & 128) {
+            count = 1 + (data[offs] & 127); offs++;
+          }
+          expand(data[offs], count);
+          if (i == MAX_WIDTH) {
+            i = 0;
+            j++;
+          }
+        }
+        return rows;
+      },
+      encode: function() {
+        var data = [];
+        for (var j = 0; j < MAX_HEIGHT; j++) {
+          for (var i = 0; i < MAX_WIDTH; i += 8) {
+            var v = 0;
+            for (var b = 0; b < 8; b++) {
+              v = (v << 1) | (bitmap[j][i + b] & 1);
+            }
+            data.push(v);
+          }
+        }
+        return data;
+      },
+      decode: function(data) {
+        var rows = [];
+        var offs = 0;
+        for (var j = 0; j < MAX_HEIGHT; j++) {
+          rows[j] = [];
+          for (var i = 0; i < MAX_WIDTH; i += 8, offs++) {
+            var v = data[offs];
+            for (var b = 0; b < 8; b++) {
+              rows[j][i + b] = (v & 128) ? 1 : 0;
+              v = v << 1;
+            }
+          }
+        }
+        return rows;
+      },
+      at: function(i, j) {
+        return this.valid(i, j) ? bitmap[j][i] : 0;
+      },
+      inMagicByte: function(i, j) {
+        var startCol = i&~7;
+        return this.valid(startCol, j) && this.valid(startCol + 7, j) &&
+          bitmap[j].slice(startCol, startCol + 8).join('') == '10001001';
+      },
+      valid: function(i, j) {
+        return i >= 0 && j >= 0 && i < MAX_WIDTH && j < MAX_HEIGHT;
+      },
+      forRegion: function(rect, fn) {
+        for (var j = Math.min(rect[1], rect[3]);
+             j <= Math.max(rect[1], rect[3]); j++) {
+          for (var i = Math.min(rect[0], rect[2]);
+               i <= Math.max(rect[0], rect[2]); i++) {
+            fn(i, j);
+          }
+        }
+      },
+      fillRect: function(rect) {
+        this.forRegion(rect, this.set.bind(this));
+      },
+      clearRect: function(rect) {
+        this.forRegion(rect, this.reset.bind(this));
+      },
+      set: function(i, j) {
+        if (this.valid(i, j)) {
+          bitmap[j][i] = 1;
+        }
+      },
+      reset: function(i, j) {
+        if (this.valid(i, j)) {
+          bitmap[j][i] = 0;
+        }
+      }
+    };
+  })();
+
+  var screen = (function(canvas) {
+    var SCREEN_COLS = 32;
+    var SCREEN_ROWS = 16;
+    var BLOCK_HEIGHT = canvas.height / SCREEN_ROWS;
+    var BLOCK_WIDTH = canvas.width / SCREEN_COLS;
+
+    var startCol = 0;
+    var startRow = 0;
+    var ctx = canvas.getContext('2d');
+
+    var buttonDown = 0;
+    canvas.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+    });
+    canvas.addEventListener('mousedown', function(e) {
+      buttonDown = e.which;
+    });
+    canvas.addEventListener('mouseup', function() {
+      buttonDown = 0;
+    });
+    canvas.addEventListener('mouseout', function() {
+      buttonDown = 0;
+    });
+
+    return {
+      rect: null,
+      lastI: null,
+      lastJ: null,
+      lastButtonDown: null,
+      mouse: function(handler) {
+        var getPos = function(e) {
+          var pw = canvas.clientWidth / SCREEN_COLS;
+          var ph = canvas.clientHeight / SCREEN_ROWS;
+          return {i: startCol + Math.floor(e.pageX / pw),
+                  j: startRow + Math.floor(e.pageY / ph)};
+        };
+        canvas.addEventListener('mousemove', function(e) {
+          var pos = getPos(e);
+          handler(pos.i, pos.j, buttonDown)
+        });
+        var that = this;
+        canvas.addEventListener('mousedown', function(e) {
+          var pos = getPos(e);
+          if (!(that.lastI == pos.i && that.lastJ == pos.j &&
+                that.lastButtonDown == buttonDown)) {
+            handler(pos.i, pos.j, buttonDown)
+          }
+          that.lastI = pos.i;
+          that.lastJ = pos.j;
+          that.lastButtonDown = buttonDown;
+        });
+      },
+      pan: function(world, delta) {
+        var newStartCol = startCol + delta[0];
+        var newStartRow = startRow + delta[1];
+        var endCol = newStartCol + SCREEN_COLS - 1;
+        var endRow = newStartRow + SCREEN_ROWS - 1;
+        if (world.valid(newStartCol, newStartRow) &&
+            world.valid(endCol, endRow)) {
+          startCol = newStartCol;
+          startRow = newStartRow;
+          this.draw(world);
+        }
+      },
+      draw: function(world) {
+        for (var j = 0, y = 0; j < SCREEN_ROWS; j++, y += BLOCK_HEIGHT) {
+          for (var i = 0, x = 0; i < SCREEN_COLS; i++, x += BLOCK_WIDTH) {
+            var value = world.at(i + startCol, j + startRow);
+            if (!value)
+              ctx.fillStyle = '#000';
+            else if (world.inMagicByte(i + startCol, j + startRow))
+              ctx.fillStyle = '#f00';
+            else
+              ctx.fillStyle = '#fff';
+            ctx.fillRect(x, y, BLOCK_WIDTH, BLOCK_HEIGHT);
+          }
+        }
+        if (this.rect) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#090';
+          var sx = BLOCK_WIDTH * startCol;
+          var sy = BLOCK_HEIGHT * startRow;
+          ctx.moveTo(BLOCK_WIDTH * this.rect[0] - sx,
+                     BLOCK_HEIGHT * this.rect[1] - sy);
+          ctx.lineTo(BLOCK_WIDTH * (this.rect[2] + 1) - sx,
+                     BLOCK_HEIGHT * this.rect[1] - sy);
+          ctx.lineTo(BLOCK_WIDTH * (this.rect[2] + 1) - sx,
+                     BLOCK_HEIGHT * (this.rect[3] + 1) - sy);
+          ctx.lineTo(BLOCK_WIDTH * this.rect[0] - sx,
+                     BLOCK_HEIGHT * (this.rect[3] + 1) - sy);
+          ctx.lineTo(BLOCK_WIDTH * this.rect[0] - sx,
+                     BLOCK_HEIGHT * this.rect[1] - sy);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.strokeStyle = '#f00';
+        var guideY = BLOCK_HEIGHT * ((128 - startRow) % SCREEN_ROWS);
+        ctx.moveTo(0, guideY);
+        ctx.lineTo(canvas.width, guideY);
+        var guideX = BLOCK_WIDTH * ((128 - startCol) % SCREEN_COLS);
+        ctx.moveTo(guideX, 0);
+        ctx.lineTo(guideX, canvas.height);
+        ctx.stroke();
+      }
+    };
+  })(document.getElementById('screen'));
+
+  var download = document.getElementById('download');
+  var notice = document.getElementById('notice');
+  world.init();
+  screen.draw(world);
+  screen.mouse(function(i, j, button) {
+    var startRect = false;
+    if (button == 1) {
+      if (screen.rect) {
+        world.fillRect(screen.rect);
+        screen.rect = null;
+      } else {
+        world.set(i, j);
+      }
+    } else if (button == 2) {
+      startRect = true;
+    } else if (button == 3) {
+      if (screen.rect) {
+        world.clearRect(screen.rect);
+        screen.rect = null;
+      } else {
+        world.reset(i, j);
+      }
+    }
+    if (screen.rect || startRect) {
+      screen.rect = [screen.lastI == null ? i : screen.lastI,
+                     screen.lastJ == null ? j : screen.lastJ, i, j];
+    }
+    screen.draw(world);
+    world.save();
+    var encoded = world.encode();
+    if (!world.check(world.decode(encoded))) {
+      notice.innerHTML = 'encoding error';
+    } else {
+      notice.innerHTML = encoded.length + 'B';
+    }
+  });
+
+  function hexasm(data) {
+    var out = '';
+    var offs = 0;
+    var writeLine = function(num) {
+      if (num == 0) return;
+      out += '        .byte ';
+      var bytes = [];
+      for (var j = 0; j < num; j++, offs++)
+        bytes[j] = '$' + data[offs].toString(16);
+      out += bytes.join(', ');
+      out += '\n';
+    };
+    for (var i = 0; i < Math.floor(data.length / 8); i++)
+      writeLine(8);
+    writeLine(data.length % 8);
+    return out;
+  }
+
+  document.addEventListener('keydown', (function(){
+    var dirs = {
+      // left, h
+      37: [-1, 0], 72: [-1, 0],
+      // right, l
+      39: [1, 0], 76: [1, 0],
+      // down, j
+      38: [0, -1], 75: [0, -1],
+      // up, k
+      40: [0, 1], 74: [0, 1],
+      // pgdn
+      34: [0, 8],
+      // pgup
+      33: [0, -8],
+    };
+    return function(e) {
+      if (e.keyCode in dirs)
+        screen.pan(world, dirs[e.keyCode]);
+      if (e.keyCode == 27) {  // escape
+        screen.rect = null;
+        screen.draw(world);
+      } else if (e.keyCode == 68) {  // d
+        download.href = 'data:text/plain,' +
+          encodeURIComponent(hexasm(world.encode()));
+        download.click();
+      }
+    };
+  })());
+</script>
+</body>
+</html>

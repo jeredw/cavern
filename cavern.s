@@ -1,8 +1,11 @@
+; CAVERN. Copyright 2013 by Jered Wierzbicki.
+; 4kB game for Atari 2600.
+ 
         processor 6502
         include "vcs.h"
         include "macro.h"
 
-START_O2 = 30          ; Amount of oxygen at start of game.
+START_O2 = 20          ; Amount of oxygen at start of game.
 START_X  = 29          ; Starting x coordinate.
 START_Y  = 10          ; Starting y coordinate.
 WIN_Y    = 8           ; Reaching this y coordinate wins.
@@ -34,8 +37,13 @@ BSEDGE   = 128-32      ; y coordinate of bottom scroll edge.
 BUMPTIME = 17          ; How many 64us ticks to play impact sounds for.
 STILL_O2 = 1           ; Oxygen burn rate for standing still.
 WALK_O2  = 2           ; Oxygen burn rate for walking.
-CLIMB_O2 = 4           ; Oxygen burn rate for climbing.
+CLIMB_O2 = 3           ; Oxygen burn rate for climbing.
 O2_RATE  = 5           ; MSB of oxygen counter when a bar expires.
+
+MAGIC    = $89         ; This is a VERY magic number.
+BORING   = $80         ; This is a less magic number.
+TSTART   = 56          ; Sprite x,y on title screen.
+TCOLOR   = $94         ; Color of title graphics.
 
         ; 128 bytes of RAM 
         SEG.U vars
@@ -55,8 +63,8 @@ CAVE_P  ds 2           ; Pointer to cave row.
 WALLDIR ds 1           ; Dir of wall collision or 0.
 MREFP0  ds 1           ; Copy of REFP0.
 PFINV   ds 1           ; Playfield color outside visible part.
-FING    ds 1
-        ds 1           ; Spare.
+FING    ds 1           ; Set if falling and clear otherwise.
+SPLASH  ds 1           ; If set, showing splash screen.
 
         ; Framebuffer: 64 bytes $90 to $CF.
         ; Each slice maps to PF1 or PF2 at one position per scanline.
@@ -88,10 +96,6 @@ R8      ds 1
 
         SEG
         ORG $F000
-
-Reset
-        CLEAN_START
-        jsr Init
 
 StartOfFrame
         VERTICAL_SYNC  ; Vertical retrace leaving A=0.
@@ -290,7 +294,7 @@ Overscan
         bne Overscan
 
         ; Line 27. Update oxygen supply counters.
-        lda SCROLL_R   ; Get current top row of world.
+        lda SCROLL_R   ; Get current top row of map.
         cmp MAX_R      ; Compare top row to max top row seen.
         bcc .deco2     ; If cur top not a new max, skip down.
         beq .deco2     ;
@@ -315,7 +319,7 @@ Overscan
         cmp #O2_RATE   ; Check MSB against burn counter.
         bcc .o2done    ; If MSB less than 
         lda OXYGEN     ; Check oxygen.
-.dead   beq .dead      ; If zero, player is dead.
+        beq Reset2     ; If zero, player is dead.
         dec OXYGEN     ; Use up one bar of oxygen.
         lda #%0010     ; Play a blip sound.
         sta AUDV0      ;
@@ -374,6 +378,70 @@ Step    bne .step      ; If moving, count steps.
 .step   dec STEPC      ; Count step.
         sta WSYNC      ;
 
+        jmp Animate
+
+; Initialize machine state.
+Reset   SUBROUTINE
+        clc
+Reset2  CLEAN_START
+        sta SWACNT     ; Configure PORT A as input.
+
+        lda #%0100
+        sta AUDC0
+        lda #%0111
+        sta AUDC1
+        lda #%01111
+        sta AUDF0
+        sta AUDF1
+        lda #<SpriteWalkF1
+        sta SPRITE_P
+        lda #>SpriteWalkF1
+        sta SPRITE_P+1
+        ; D0: REF=1, reflect playfield.
+        ; D1: SCORE=0, do not color left/right differently.
+        ; D2: PFP=0, player is in front of pf.
+        ; D4-D5: BALL SIZE 0, 1 clock.
+        lda #%00001
+        sta CTRLPF
+
+        lda #START_O2
+        sta OXYGEN
+        lda #START_X
+        sta SPRITE_X
+        lda #START_Y
+        sta SPRITE_Y
+        ; This is fixed to zero.
+        ;lda #<CaveData
+        ;sta CAVE_P
+        lda #>CaveData
+        sta CAVE_P+1
+        bcs .blit
+
+        lda #<Title
+        sta CAVE_P
+        lda #>Title
+        sta CAVE_P+1
+        lda #TCOLOR
+        sta PFINV
+        lda #TSTART
+        sta SPRITE_X
+        sta SPRITE_Y
+        stx OXYGEN
+        lda #O2_RATE-1
+        sta OXYCNT+1
+
+.blit   jsr CopyRow
+        jsr StorRow
+        tya
+        clc
+        adc #CAVEW/8
+        tay
+        inx
+        cpx #FBH
+        bne .blit
+
+        jmp StartOfFrame
+
         ; Line 30. Animate the sprite.
         ; X has the current motion direction.
 Animate cpx #DIR_STOP  ; +2 Moving?
@@ -416,52 +484,6 @@ Animate cpx #DIR_STOP  ; +2 Moving?
 .adone  sta WSYNC      ; [72] +3
 
         jmp StartOfFrame
-
-; Initialize machine state.
-Init    SUBROUTINE
-        sta SWACNT     ; Configure PORT A as input.
-
-        lda #%0100
-        sta AUDC0
-        lda #%01111
-        sta AUDF0
-        lda #%0111
-        sta AUDC1
-        lda #%01111
-        sta AUDF1
-        lda #<SpriteWalkF1
-        sta SPRITE_P
-        lda #>SpriteWalkF1
-        sta SPRITE_P+1
-        lda #START_X
-        sta SPRITE_X
-        lda #START_Y
-        sta SPRITE_Y
-        lda #<CaveData
-        sta CAVE_P
-        lda #>CaveData
-        sta CAVE_P+1
-        ; D0: REF=1, reflect playfield.
-        ; D1: SCORE=0, do not color left/right differently.
-        ; D2: PFP=0, player is in front of pf.
-        ; D4-D5: BALL SIZE 0, 1 clock.
-        lda #%00001
-        sta CTRLPF
-        lda #START_O2
-        sta OXYGEN
-
-.fillfb:
-        jsr CopyRow
-        jsr StorRow
-        tya
-        clc
-        adc #CAVEW/8
-        tay
-        inx
-        cpx #FBH
-        bne .fillfb
-
-        rts
 
 ; Lift up onto a ledge and stop climbing.
 ; This chunk of code is here so the picture loop is on one page.
@@ -536,9 +558,23 @@ Scroll  SUBROUTINE
         sta SPRITE_Y   ;
 .out    jmp ChkCave    ; Next, check nearby cave conditions.
 
-        
+; Shifts R1:R5 so that bit 7 of R1 in R1:R5 corresponds to SCROLL_C.
+ShftRow SUBROUTINE
+        lda SCROLL_C
+        and #7
+        tax
+.shift  beq .out
+        asl R5
+        rol R4
+        rol R3
+        rol R2
+        rol R1
+        dex
+        jmp .shift
+.out    rts
+
 ; Positions object X in column A.
-        ALIGN 8        ; .div15 and branch must be on the same page.
+; Note: .div15 and branch must be on the same page.
 XPos    SUBROUTINE
         sec            ; 2
         sta WSYNC      ; 3, line 1
@@ -624,21 +660,6 @@ CopyRow SUBROUTINE
         tax
         rts
 
-; Shifts R1:R5 so that bit 7 of R1 in R1:R5 corresponds to SCROLL_C.
-ShftRow SUBROUTINE
-        lda SCROLL_C
-        and #7
-        tax
-.shift  beq .out
-        asl R5
-        rol R4
-        rol R3
-        rol R2
-        rol R1
-        dex
-        jmp .shift
-.out    rts
-
 ; Copies row from temporary in R1:R4 to row X of FB0:FB3.
 ; Reverses data for FB1 and FB3 for PF2 and PF1-mirrored.
 StorRow SUBROUTINE
@@ -655,8 +676,8 @@ StorRow SUBROUTINE
         rts
 
 ; Adds X:A to cave bitmap pointer.
+; Assumes carry is set properly on entry.
 AddCave SUBROUTINE
-        clc            ;
         adc CAVE_P     ; LSB of cave row.
         sta CAVE_P     ; Store LSB.
         txa            ; Carry into MSB.
@@ -668,12 +689,12 @@ AddCave SUBROUTINE
 PanDown SUBROUTINE
         lda SCROLL_R   ; Get screen start row.
         cmp #CAVEH-#FBH ; Compare to max start row.
-        bne .scrl      ; If equal, do not pan down.
-        clc            ; Did not scroll.
-        rts            ; Return.
-.scrl   inc SCROLL_R   ; Pan down.
+        clc            ; Assume did not scroll.
+        beq .out       ; If equal, do not pan down.
+        inc SCROLL_R   ; Pan down.
         lda <#NEXTROW  ; Offset of next bitmap row.
         ldx >#NEXTROW  ;
+        ; Carry is clear because of clc above.
         jsr AddCave    ; Add one row.
         ; Move framebuffer contents up one row.
         ldx -#FBH+1
@@ -701,12 +722,12 @@ PanDown SUBROUTINE
 ; Pans the screen up by one row.
 PanUp   SUBROUTINE
         lda SCROLL_R   ; Get start screen row.
-        bne .scrl      ; If zero, do not pan up.
-        clc            ; Did not scroll.
-        rts            ; Return.
-.scrl   dec SCROLL_R   ; Pan up.
+        clc            ; Assume did not scroll.
+        beq .out       ; If zero, do not pan up.
+        dec SCROLL_R   ; Pan up.
         lda #<PREVROW  ; Offset of previous bitmap row.
         ldx #>PREVROW  ;
+        ; Carry is clear because of clc above.
         jsr AddCave    ; Subtract one row.
         ; Move framebuffer contents down one row.
         ldx #FBH-1
@@ -734,17 +755,17 @@ PanUp   SUBROUTINE
 ; Pans the screen left by one column.
 PanLeft SUBROUTINE
         lda SCROLL_C   ; Get screen start column.
-        bne .scrl      ; If not at 0, scroll.
-        clc            ; Clear carry since didn't scroll.
-        rts            ; Return.
-.scrl   dec SCROLL_C   ; Pan left.
+        clc            ; Assume didn't scroll.
+        beq .out       ; If not at 0, scroll.
+        dec SCROLL_C   ; Pan left.
         lda SCROLL_C   ; Get new left column.
         and #7         ; Get start pixel of left column.
         sta R1         ; Stash it.
         cmp #7         ; Pixel 7 implies a new leftmost column byte.
         bne .ptrok     ; Else current cave ptr is ok.
-        lda <#PREVCOL  ; Offset to previous cave byte.
-        ldx >#PREVCOL  ;
+        lda <#PREVCOL-1; Offset to previous cave byte,
+        ldx >#PREVCOL  ; including carry.
+        ; Carry is set because A >= 7, so use PREVCOL-1.
         jsr AddCave    ; Scan left one column.
 .ptrok  lda R1         ; Start column (mod 8).
         tax            ;
@@ -768,16 +789,15 @@ PanLeft SUBROUTINE
         bne .shift
         ldx #24
         sec
-        rts
+.out    rts
 
 ; Pans the screen right by one column.
 PanRight SUBROUTINE
         lda SCROLL_C   ; Get screen start column.
         cmp #CAVEW-#FBW ; Test against rightmost column.
-        bne .scrl      ; If at rightmost column don't pan right.
-        clc            ; Flag did not scroll.
-        rts            ; Return.
-.scrl   inc SCROLL_C   ; Else pan right.
+        clc            ; Assume did not scroll.
+        beq .out       ; If at rightmost column don't pan right.
+        inc SCROLL_C   ; Else pan right.
         ;0123456701234567012345670123456701234567
         ;       |                              |
         ;aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee
@@ -788,6 +808,7 @@ PanRight SUBROUTINE
         bne .ptrok     ; Pixel 0 implies a new leftmost column byte.
         lda <#NEXTCOL  ; Offset to next cave byte.
         ldx >#NEXTCOL  ;
+        ; Carry is clear from clc above.
         jsr AddCave    ; Scan right one column.
         ;0123456701234567012345670123456701234567
         ;        |                              |
@@ -800,7 +821,13 @@ PanRight SUBROUTINE
         ldx -#FBH      ; x+16 indexes framebuffer rows.
         ; Shift in one new bit on the right of each framebuffer row.
 .shift  lda (CAVE_P),y ; Load rightmost cave byte.
-        and R1         ; Mask the newly visible bit.
+        cmp #MAGIC     ; Is it magic?
+        bne .mask      ; If not magic, interpret normally.
+        sta AUDV0      ; Turn on sound volume.
+        tya            ; Get a reasonable timeout value (3 or 4).
+        sta TIM64T     ; Start timer.
+        lda #BORING    ; Cave in the wall so right side is passable.
+.mask   and R1         ; Mask the newly visible bit.
         cmp R1         ; Set carry if bit is set, else clear.
         ror FB3+16,x   ; Carry goes into rightmost pixel (bit 7).
         rol FB2+16,x   ; Leftmost FB3 -> rightmost FB2.
@@ -812,9 +839,9 @@ PanRight SUBROUTINE
         tay            ;
         inx            ; Next framebuffer row.
         bne .shift     ;
-        ldx #24        ; This many scanlines of VBLANK remain.
+        ldx #23        ; This many scanlines of VBLANK remain.
         sec            ; Flag that scrolling happened.
-        rts
+.out    rts
 
 ; Bitmasks selecting left/right pixel based on start column (mod 8).
 rmask   .byte #%00000001
@@ -901,9 +928,12 @@ PFCol   EQU . - 10
         .byte $24, $26, $26, $24, $24, $22, $22, $20, $20, $20
 
         ORG $F500
-; The game world map.
+; The game map.
 CaveData
-        #include "cave.s"
+        #include "map.s"
+
+; The title screen, in the lower right of the cave bitmap.
+Title   EQU  CaveData + (CAVEW*(CAVEH-FBH) + (CAVEW-FBW))/8
 
         ORG $FFFA
 
