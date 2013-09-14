@@ -287,7 +287,7 @@ Status  sta WSYNC      ; Wait for end of last cave line.
 
         ; 30 total lines of overscan.
         ; Take off lines as needed for logic and add below.
-        ldx #26
+        ldx #23
 Overscan
         dex            ; Count line.
         sta WSYNC      ; Start new line.
