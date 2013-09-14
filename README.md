@@ -58,12 +58,13 @@ page, map.html, to edit the map.
 Strangely, I didn't use git during development but have attempted to
 reconstruct a partial history of the game source from saves.
 
-After the game was done I tested this it on an Atari 2600 console on
-an NTSC TV, a little Sceptre E16. My vertical sync was off by a couple
-of lines, which I found through quick trial and error, but otherwise
-the game plays fine. I was especially pleased with how the joystick
-worked out since I'd only tested with arrow keys and wasn't sure the
-controls would feel right. But climbing seems appropriately hard.
+After the game was done I tested it on an Atari 2600 console on an NTSC
+TV, a little Sceptre E16. I loaded the ROM using a Harmony cartridge. My
+vertical sync was off by a couple of lines, which I found through quick
+trial and error, but otherwise the game plays fine. I was especially
+pleased with how the joystick worked out since I'd only tested with
+arrow keys and wasn't sure the controls would feel right. But climbing
+seems appropriately hard.
 
 The game rendering works by soft scrolling around a big bitmap into a
 64 byte framebuffer (half the total RAM!) Its "kernel", which is what
@@ -102,3 +103,5 @@ An ending screen would be cool. I was thinking twinkling stars.
 
 There should be some kind of reward for exploring more of the cave,
 and maybe a way to blast out of dead ends sometimes or go back.
+
+I'd like to make some physical carts! I made some labels and such.
