@@ -58,10 +58,12 @@ page, map.html, to edit the map.
 Strangely, I didn't use git during development but have attempted to
 reconstruct a partial history of the game source from saves.
 
-I haven't tested this on a real TV set and suspect there is still some
-work needed to make the timings come out right. I also don't have an
-Atari joystick, so have only played with arrow keys. The controls or
-map may need to be tweaked for a joystick.
+After the game was done I tested this it on an Atari 2600 console on
+an NTSC TV, a little Sceptre E16. My vertical sync was off by a couple
+of lines, which I found through quick trial and error, but otherwise
+the game plays fine. I was especially pleased with how the joystick
+worked out since I'd only tested with arrow keys and wasn't sure the
+controls would feel right. But climbing seems appropriately hard.
 
 The game rendering works by soft scrolling around a big bitmap into a
 64 byte framebuffer (half the total RAM!) Its "kernel", which is what
@@ -89,6 +91,10 @@ another 32 bytes or more out. There's some extra padding in sprite
 frames, some places could actually use stack instead of lda/sta'ing
 into it, the code could be reordered to skip some jumps, the byte
 reverse loop could be a loop instead of repeated.
+
+There are a couple code paths that are not timed right so in some
+parts of the world the picture jumps for a few frames. That should
+be fixable with some patience.
 
 The sound is awful. Some kind of ambient music might be cool.
 
